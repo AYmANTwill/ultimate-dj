@@ -71,10 +71,18 @@ share a number on the Camelot wheel.
 
 ## 📷 Screenshots
 
-> _Place screenshots in `docs/screenshots/` and link them here. The
+
 > app has 8 pages: Home / Download / Library / Analyze / Mixer /
 > Setlist / Discover / Settings._
 > <img width="1918" height="1045" alt="image" src="https://github.com/user-attachments/assets/77f822f2-976b-445d-90b0-f4ab76f9e56f" />
+<img width="1915" height="1046" alt="image" src="https://github.com/user-attachments/assets/fb492efb-d143-4f0e-abcc-1bd71b35d9fb" />
+<img width="1919" height="1049" alt="image" src="https://github.com/user-attachments/assets/d8b4d3e8-717d-4938-95a8-64b84c78fea2" />
+<img width="1919" height="1054" alt="image" src="https://github.com/user-attachments/assets/62d1495b-923a-4b80-9189-a5d492bc4d69" />
+<img width="1917" height="1046" alt="image" src="https://github.com/user-attachments/assets/a26aee94-ab77-4063-8e1e-828da756864b" />
+
+
+
+
 
 
 
