@@ -1,0 +1,32 @@
+# Ultimate DJ — runtime dependencies
+# Auto-installed at first launch by app/deps.py if missing.
+
+# UI
+customtkinter>=5.2.0
+Pillow>=10.0.0
+
+# Audio analysis + playback
+librosa>=0.10.0
+numpy>=1.24.0
+soundfile>=0.12.0
+sounddevice>=0.4.6
+mutagen>=1.47.0
+pyrubberband>=0.3.4         # optional (also needs rubberband.exe on PATH)
+
+# Downloads & 3rd-party APIs
+yt-dlp[default]>=2026.0.0
+spotipy>=2.23.0
+cloudscraper>=1.2.71
+beautifulsoup4>=4.12
+lxml>=4.9
+
+# Browser embedding (Windows: WebView2 runtime)
+pywebview>=6.0
+
+# Secrets / OS integration
+keyring>=24.0
+
+# External binaries expected on PATH (installed by deps.py via winget):
+#   ffmpeg       — audio conversion (mandatory)
+#   node         — yt-dlp YouTube auth (mandatory)
+#   rubberband   — high-quality time-stretch (optional)

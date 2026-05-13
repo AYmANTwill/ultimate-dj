@@ -1,0 +1,69 @@
+# ── Runtime data (per-user, never commit) ─────────────────────
+# The whole data/ dir is local state: DB, waveform cache, browser
+# profile (cookies!), repair history, scraped tracklists, backups,
+# embedding cache. Excluded entirely — config.json is rebuilt from
+# DEFAULTS on first launch.
+data/
+downloads/
+
+# ── Secrets (defence in depth) ────────────────────────────────
+# Spotify creds now live in Windows Credential Manager (keyring), but
+# legacy installs may have plaintext fallbacks here. Keep them out.
+*.env
+*.secret
+*.bak
+
+# ── Python ─────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Test + coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ── IDE / editor ───────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Claude Code session state ──────────────────────────────────
+.claude/
+.cache
+
+# ── PyInstaller artefacts ──────────────────────────────────────
+*.spec
+*.exe
+*.app
