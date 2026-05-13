@@ -99,7 +99,7 @@ share a number on the Camelot wheel.
 ### Install
 
 ```bash
-git clone https://github.com/<you>/ultimate-dj.git
+git clone https://github.com/AYmANTwill/ultimate-dj.git
 cd ultimate-dj
 python -m pip install -r requirements.txt
 ```
