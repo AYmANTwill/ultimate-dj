@@ -74,7 +74,8 @@ share a number on the Camelot wheel.
 
 > app has 8 pages: Home / Download / Library / Analyze / Mixer /
 > Setlist / Discover / Settings._
-> <img width="1918" height="1045" alt="image" src="https://github.com/user-attachments/assets/77f822f2-976b-445d-90b0-f4ab76f9e56f" />
+
+<img width="1918" height="1045" alt="image" src="https://github.com/user-attachments/assets/77f822f2-976b-445d-90b0-f4ab76f9e56f" />
 
 <img width="1915" height="1046" alt="image" src="https://github.com/user-attachments/assets/fb492efb-d143-4f0e-abcc-1bd71b35d9fb" />
 
