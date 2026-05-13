@@ -74,6 +74,8 @@ share a number on the Camelot wheel.
 > _Place screenshots in `docs/screenshots/` and link them here. The
 > app has 8 pages: Home / Download / Library / Analyze / Mixer /
 > Setlist / Discover / Settings._
+> ![Uploading image.png…]()
+
 
 ```
 ┌─ Sidebar ─┐ ┌────────────── Mixer ────────────────────┐
