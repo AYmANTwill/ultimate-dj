@@ -86,6 +86,23 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                 file_deleted INTEGER DEFAULT 0
             )
         """)
+        # Co-occurrence weights between local tracks, mined from real
+        # DJ sets scraped via engine.tracklists. Rebuilt by
+        # engine.cooccurrence.rebuild() — schema ensured there too,
+        # this CREATE is just so the queries in transition_score don't
+        # fail on a fresh install with no scraped data.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS track_pairs (
+                path_a TEXT NOT NULL,
+                path_b TEXT NOT NULL,
+                weight REAL NOT NULL DEFAULT 0,
+                sets   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (path_a, path_b)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_track_pairs_a "
+            "ON track_pairs(path_a)")
         # Add columns to old DBs that pre-date the new schema
         existing_cols = {row[1] for row in conn.execute(
             "PRAGMA table_info(tracks)").fetchall()}
@@ -194,6 +211,15 @@ def init_schema(conn: sqlite3.Connection) -> None:
             deleted_at   INTEGER NOT NULL,
             track_json   TEXT NOT NULL,
             file_deleted INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS track_pairs (
+            path_a TEXT NOT NULL,
+            path_b TEXT NOT NULL,
+            weight REAL NOT NULL DEFAULT 0,
+            sets   INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (path_a, path_b)
         )
     """)
     existing_cols = {row[1] for row in conn.execute(
@@ -908,6 +934,19 @@ def transition_score(track_a: dict, track_b: dict) -> float:
         # encoded ones — they just lose access to the AI signal.
         base = key * 0.50 + bpm * 0.35 + energy * 0.15
 
+    # ── Co-occurrence boost (AI level 2) ──────────────────────────
+    # If both tracks appear together in real DJ sets (engine.cooccurrence
+    # builds the matrix from 1001tracklists scrapes), add up to +15
+    # raw points. Capped so a hot pair can't drown out a bad key match.
+    # Silently 0 when no scrape data is available — graceful degrade.
+    try:
+        from app.engine.cooccurrence import cooccurrence_score
+        cooc = cooccurrence_score(_thread_conn(), track_a.get("path", ""),
+                                    track_b.get("path", ""))
+    except Exception:
+        cooc = 0.0
+    coop_bonus = min(15.0, cooc * 0.15)   # cooc is already 0-100
+
     # Genre family bonus — substring match keeps it loose enough that
     # "tech house" + "house" or "afro tech" + "afro house" still lift.
     g_a = (track_a.get("genre") or "").lower().strip()
@@ -941,8 +980,17 @@ def transition_score(track_a: dict, track_b: dict) -> float:
     artist_b = _artist_from_title(track_b.get("title") or "")
     same_artist_pen = -8.0 if artist_a and artist_a == artist_b else 0.0
 
-    score = base + genre_bonus + rating_mod + same_artist_pen
+    score = (base + genre_bonus + rating_mod
+              + same_artist_pen + coop_bonus)
     return round(max(0.0, min(100.0, score)), 1)
+
+
+def _thread_conn():
+    """Helper for transition_score's cooccurrence lookup — uses the
+    thread-local DB conn so we don't pay a fresh connect per scoring
+    call. Falls back to a fresh connect if the thread doesn't have one
+    cached yet."""
+    return get_connection()
 
 
 def _artist_from_title(title: str) -> str:

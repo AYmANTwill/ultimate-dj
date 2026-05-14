@@ -279,12 +279,56 @@ class SettingsPage(ctk.CTkFrame):
             command=lambda: self._run_embed(force=True),
         ).pack(side="left", padx=6)
 
+        # ── AI · Co-occurrence (1001tracklists) ───────────────
+        # Mines real DJ sets to find which local tracks pros mix
+        # together. Adds up to +15 raw points to the transition score
+        # for pairs that show up often in scraped sets.
+        self._section(scroll, "AI · Co-occurrence (1001tracklists)")
+        cooc_card = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"],
+                                  corner_radius=8)
+        cooc_card.pack(fill="x", pady=3)
+
+        try:
+            from app.engine import cooccurrence
+            from app.engine.tracklists import list_cached_tracklists
+            from app.engine.library import get_connection
+            _n_sets = len(list_cached_tracklists())
+            _n_pairs = cooccurrence.pair_count(get_connection())
+        except Exception:
+            _n_sets, _n_pairs = 0, 0
+
+        self._cooc_status = ctk.CTkLabel(
+            cooc_card,
+            text=f"{_n_sets} sets en cache  ·  {_n_pairs} paires co-jouées",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text"])
+        self._cooc_status.pack(anchor="w", padx=12, pady=(10, 4))
+
+        ctk.CTkLabel(
+            cooc_card,
+            text=("Colle une URL 1001tracklists dans Discover pour "
+                   "scraper un set, puis reconstruis la matrice ici. "
+                   "Aucun fichier audio n'est modifié — c'est juste "
+                   "des données de co-jeu."),
+            font=ctk.CTkFont(size=10), text_color=COLORS["text_dim"],
+            justify="left", wraplength=720
+        ).pack(anchor="w", padx=12, pady=(0, 6))
+
+        cooc_row = ctk.CTkFrame(cooc_card, fg_color="transparent")
+        cooc_row.pack(fill="x", padx=12, pady=(0, 10))
+        ctk.CTkButton(
+            cooc_row, text="Reconstruire la matrice",
+            width=200, height=32, font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["bg_dark"],
+            command=self._run_cooccurrence,
+        ).pack(side="left", padx=(0, 6))
+
         # ── About ────────────────────────────────────────────
         self._section(scroll, "About")
         about = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"], corner_radius=8)
         about.pack(fill="x", pady=3)
         ctk.CTkLabel(about,
-                     text="Ultimate DJ  ·  v1.2",
+                     text="Ultimate DJ  ·  v1.3",
                      font=ctk.CTkFont(size=14, weight="bold"),
                      text_color=COLORS["accent"]
                      ).pack(anchor="w", padx=12, pady=(10, 0))
@@ -306,6 +350,47 @@ class SettingsPage(ctk.CTkFrame):
         self.save_label = ctk.CTkLabel(scroll, text="",
                                         font=ctk.CTkFont(size=12))
         self.save_label.pack()
+
+    def _run_cooccurrence(self):
+        """Rebuild the track_pairs table from every cached tracklist.
+        Off-thread so the rebuild on 5k+ sets doesn't freeze the UI."""
+        import threading
+        from app.engine import cooccurrence
+        from app.engine.library import get_connection
+        from app.ui.toast import show_toast
+
+        def work():
+            conn = get_connection()
+
+            def progress(i, total, slug):
+                if i % 10 == 0 or i == total:
+                    self.after(0, lambda i=i, t=total:
+                                self._cooc_status.configure(
+                                    text=f"Reconstruction {i}/{t} sets…",
+                                    text_color=COLORS["accent"]))
+
+            try:
+                summary = cooccurrence.rebuild(conn, on_progress=progress)
+                cooccurrence.invalidate_cache()
+            except Exception as e:
+                self.after(0, lambda err=str(e): self._cooc_status.configure(
+                    text=f"Erreur : {err}",
+                    text_color=COLORS["error"]))
+                return
+
+            self.after(0, lambda s=summary: self._cooc_status.configure(
+                text=(f"{s['sets']} sets · {s['pairs']} paires · "
+                      f"{s['matched_tracks']} tracks reconnues "
+                      f"({s['unmatched_tracks']} non matchées)"),
+                text_color=COLORS["success"]))
+            self.after(0, lambda: show_toast(
+                self.winfo_toplevel(),
+                f"Matrice co-occurrence reconstruite — "
+                f"{summary['pairs']} paires actives",
+                kind="success"))
+
+        threading.Thread(target=work, daemon=True,
+                          name="cooccurrence-rebuild").start()
 
     def _run_embed(self, *, force: bool):
         """Background bulk-encoder. Walks the library, computes audio

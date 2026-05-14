@@ -32,7 +32,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlparse
 
 from app.config import DATA_DIR
@@ -309,3 +309,101 @@ def list_cached_tracklists() -> list[dict]:
         except Exception:
             continue
     return out
+
+
+# ── Phase 2: batch + DJ-discovery ────────────────────────────────
+
+def discover_dj_sets(dj_slug: str, *, limit: int = 20) -> list[str]:
+    """List recent set URLs from a DJ's profile page.
+
+    `dj_slug` is the part of the URL right after /dj/, e.g.
+    "carl_cox" for https://www.1001tracklists.com/dj/carl_cox/index.html
+
+    Returns a list of full URLs to individual sets, newest first.
+    Honours the 5s rate-limit. Returns an empty list on any failure
+    (Cloudflare flag, layout change, etc.) so callers can keep going.
+    """
+    from bs4 import BeautifulSoup
+    import re as _re
+    sc = _scraper()
+    if sc is None:
+        return []
+    url = f"https://www.1001tracklists.com/dj/{dj_slug}/index.html"
+    _wait_polite()
+    headers = {"User-Agent": _USER_AGENTS[int(time.time())
+                                            % len(_USER_AGENTS)]}
+    try:
+        resp = sc.get(url, headers=headers, timeout=30)
+    except Exception as e:
+        log_warning(f"discover_dj_sets({dj_slug}): {e}")
+        return []
+    if resp.status_code != 200:
+        return []
+    soup = BeautifulSoup(resp.text, "lxml")
+    # Set links live in anchors whose href matches /tracklist/<id>/<slug>.html
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in soup.find_all("a", href=_re.compile(r"^/tracklist/")):
+        href = a.get("href", "").split("?")[0]
+        if not href.endswith(".html"):
+            continue
+        full = "https://www.1001tracklists.com" + href
+        if full in seen:
+            continue
+        seen.add(full)
+        out.append(full)
+        if len(out) >= limit:
+            break
+    log_info(f"discover_dj_sets({dj_slug}): {len(out)} URLs")
+    return out
+
+
+def batch_scrape(urls: list[str], *,
+                  on_progress: Callable[[int, int, str, str], None]
+                                | None = None,
+                  stop_event=None) -> dict:
+    """Fetch a list of tracklist URLs, respecting the 5s rate-limit.
+
+    Skips URLs that are already cached. Reports progress via
+    ``on_progress(i, total, status, title_or_error)`` where status is
+    one of: "cache", "ok", "fail".
+
+    Pass a ``threading.Event`` as stop_event to allow cancellation.
+
+    Returns ``{"fetched": N, "cached": N, "failed": N}``.
+    """
+    fetched = cached = failed = 0
+    total = len(urls)
+    for i, url in enumerate(urls, 1):
+        if stop_event is not None and stop_event.is_set():
+            log_info(f"batch_scrape: stopped at {i}/{total}")
+            break
+        # Cache hit → no network at all
+        if _cache_path(url).exists():
+            cached += 1
+            if on_progress:
+                try:
+                    on_progress(i, total, "cache", url)
+                except Exception:
+                    pass
+            continue
+        try:
+            tl = fetch_tracklist(url, use_cache=False)
+            fetched += 1
+            if on_progress:
+                try:
+                    on_progress(i, total, "ok",
+                                 tl.get("title", "")[:60])
+                except Exception:
+                    pass
+        except Exception as e:
+            failed += 1
+            log_warning(f"batch_scrape failed for {url}: {e}")
+            if on_progress:
+                try:
+                    on_progress(i, total, "fail", str(e)[:80])
+                except Exception:
+                    pass
+    log_info(f"batch_scrape done — fetched={fetched}, "
+             f"cached={cached}, failed={failed}")
+    return {"fetched": fetched, "cached": cached, "failed": failed}
