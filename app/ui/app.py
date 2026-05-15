@@ -91,6 +91,12 @@ class App(ctk.CTk):
         # Default landing: Home (overview + quick actions)
         self._switch_page("Home")
 
+        # Floating activity tray — appears top-left when any background
+        # task registers itself, auto-hides when none are active. Single
+        # source of truth for "what's the app currently doing".
+        from app.ui.activity_tray import ActivityTray
+        self._activity_tray = ActivityTray(self)
+
         # Background auto-scan: on every launch, walk the music folders
         # configured in Settings, add any new audio files to the DB and
         # remove orphans whose path no longer exists. Runs after_idle so

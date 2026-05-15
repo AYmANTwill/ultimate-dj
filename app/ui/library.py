@@ -648,6 +648,9 @@ class LibraryPage(ctk.CTkFrame):
 
     def _sync_thread(self, folders: list[str]):
         import time
+        from app.engine import tasks as task_registry
+        task = task_registry.register(
+            "Sync Library", message="scan du dossier…")
         try:
             conn = get_connection()
             result = sync_library(conn, folders)
@@ -660,6 +663,15 @@ class LibraryPage(ctk.CTkFrame):
             errs = 0
             n = len(new_paths)
             t_start = time.time()
+            if n == 0:
+                task_registry.complete(
+                    task.id, success=True,
+                    message=f"Aucun nouveau fichier · "
+                            f"{removed} orphelins retirés")
+            else:
+                task_registry.update(
+                    task.id, progress=0.0,
+                    message=f"0/{n} nouveaux à analyser")
             from app.engine import repair as repair_engine
             from app.engine.library import mark_corrupt
             for i, path in enumerate(new_paths, 1):
@@ -717,6 +729,16 @@ class LibraryPage(ctk.CTkFrame):
                     lambda i=i, n=n, eta=eta: self.sync_status.configure(
                         text=f"Analysing {i}/{n} · ETA {eta}",
                         text_color=COLORS["accent"]))
+                # Mirror to activity tray (every 5 tracks — cheap)
+                if i % 5 == 0 or i == n:
+                    task_registry.update(
+                        task.id, progress=i / n, eta_s=eta_s,
+                        message=f"{i}/{n}  ·  {Path(path).name[:32]}")
+            if n > 0:
+                task_registry.complete(
+                    task.id, success=(errs == 0),
+                    message=f"+{done} nouveaux, -{removed} orphelins, "
+                            f"{errs} erreurs")
             msg = (f"Sync done — +{done} new, "
                    f"-{removed} removed, {errs} errors")
             self.after(0, lambda: self.sync_status.configure(
@@ -726,6 +748,12 @@ class LibraryPage(ctk.CTkFrame):
             log_error("sync_library crashed", e)
             self.after(0, lambda: self.sync_status.configure(
                 text=f"Sync error: {e}", text_color=COLORS["error"]))
+            try:
+                task_registry.complete(
+                    task.id, success=False,
+                    message=f"Erreur : {str(e)[:60]}")
+            except Exception:
+                pass
         finally:
             self.after(0, lambda: self.sync_btn.configure(
                 state="normal", text="Sync Library"))

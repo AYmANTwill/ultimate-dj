@@ -237,20 +237,15 @@ class SettingsPage(ctk.CTkFrame):
         ai_card.pack(fill="x", pady=3)
 
         # Show backend + progress at build time; refreshed on click
-        from app.engine import embeddings as _emb
-        from app.engine.library import (get_connection as _gc,
-                                          embedding_count as _ec)
-        try:
-            _done, _total = _ec(_gc())
-        except Exception:
-            _done, _total = 0, 0
+        # Status label is built with a placeholder; the real value is
+        # filled in by _refresh_ai_status() after the page paints, so
+        # opening Settings doesn't block on a DB count.
         self._ai_status = ctk.CTkLabel(
-            ai_card,
-            text=f"Backend : {_emb.best_backend()}  ·  "
-                 f"{_done}/{_total} tracks encodés",
+            ai_card, text="Chargement…",
             font=ctk.CTkFont(size=12),
-            text_color=COLORS["text"])
+            text_color=COLORS["text_dim"])
         self._ai_status.pack(anchor="w", padx=12, pady=(10, 4))
+        self.after_idle(self._refresh_ai_status)
 
         ctk.CTkLabel(
             ai_card,
@@ -288,20 +283,13 @@ class SettingsPage(ctk.CTkFrame):
                                   corner_radius=8)
         cooc_card.pack(fill="x", pady=3)
 
-        try:
-            from app.engine import cooccurrence
-            from app.engine.tracklists import list_cached_tracklists
-            from app.engine.library import get_connection
-            _n_sets = len(list_cached_tracklists())
-            _n_pairs = cooccurrence.pair_count(get_connection())
-        except Exception:
-            _n_sets, _n_pairs = 0, 0
-
+        # Same trick as AI section — placeholder, real values filled
+        # in after the page paints.
         self._cooc_status = ctk.CTkLabel(
-            cooc_card,
-            text=f"{_n_sets} sets en cache  ·  {_n_pairs} paires co-jouées",
-            font=ctk.CTkFont(size=12), text_color=COLORS["text"])
+            cooc_card, text="Chargement…",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_dim"])
         self._cooc_status.pack(anchor="w", padx=12, pady=(10, 4))
+        self.after_idle(self._refresh_cooc_status)
 
         ctk.CTkLabel(
             cooc_card,
@@ -353,29 +341,27 @@ class SettingsPage(ctk.CTkFrame):
 
     def _run_cooccurrence(self):
         """Rebuild the track_pairs table from every cached tracklist.
-        Off-thread so the rebuild on 5k+ sets doesn't freeze the UI."""
+        Off-thread; progress + ETA mirror into the activity tray."""
         import threading
-        from app.engine import cooccurrence
+        from app.engine import cooccurrence, tasks
         from app.engine.library import get_connection
-        from app.ui.toast import show_toast
 
         def work():
-            conn = get_connection()
-
-            def progress(i, total, slug):
-                if i % 10 == 0 or i == total:
-                    self.after(0, lambda i=i, t=total:
-                                self._cooc_status.configure(
-                                    text=f"Reconstruction {i}/{t} sets…",
-                                    text_color=COLORS["accent"]))
-
+            task = tasks.register("Cooccurrence — rebuild",
+                                    message="lecture des sets…")
             try:
+                conn = get_connection()
+
+                def progress(i, total, slug):
+                    tasks.update(task.id,
+                                  progress=i / max(1, total),
+                                  message=f"{i}/{total}  ·  {slug[:40]}")
+
                 summary = cooccurrence.rebuild(conn, on_progress=progress)
                 cooccurrence.invalidate_cache()
             except Exception as e:
-                self.after(0, lambda err=str(e): self._cooc_status.configure(
-                    text=f"Erreur : {err}",
-                    text_color=COLORS["error"]))
+                tasks.complete(task.id, success=False,
+                                message=f"Erreur : {str(e)[:60]}")
                 return
 
             self.after(0, lambda s=summary: self._cooc_status.configure(
@@ -383,11 +369,10 @@ class SettingsPage(ctk.CTkFrame):
                       f"{s['matched_tracks']} tracks reconnues "
                       f"({s['unmatched_tracks']} non matchées)"),
                 text_color=COLORS["success"]))
-            self.after(0, lambda: show_toast(
-                self.winfo_toplevel(),
-                f"Matrice co-occurrence reconstruite — "
-                f"{summary['pairs']} paires actives",
-                kind="success"))
+            tasks.complete(
+                task.id, success=True,
+                message=f"{summary['pairs']} paires actives, "
+                        f"{summary['matched_tracks']} tracks reconnues")
 
         threading.Thread(target=work, daemon=True,
                           name="cooccurrence-rebuild").start()
@@ -395,87 +380,128 @@ class SettingsPage(ctk.CTkFrame):
     def _run_embed(self, *, force: bool):
         """Background bulk-encoder. Walks the library, computes audio
         embeddings, persists them. Force=True re-encodes already-done
-        tracks (use after a backend swap)."""
+        tracks (use after a backend swap).
+
+        Progress + ETA are pushed to the global activity tray (top-left
+        of the window) so the user sees what's happening even after
+        navigating away from Settings."""
         import threading
-        from app.engine import embeddings, library
-        from app.ui.toast import show_toast
+        from app.engine import embeddings, library, tasks
 
         backend = embeddings.best_backend()
 
         def work():
-            conn = library.get_connection()
-            if force:
-                # Wipe existing embeddings so the regular query
-                # surfaces every track
-                conn.execute(
-                    "UPDATE tracks SET embedding = NULL, "
-                    "embedding_backend = NULL "
-                    "WHERE COALESCE(corrupt, 0) = 0")
-                conn.commit()
-            todo = library.tracks_without_embedding(conn)
-            if not todo:
-                self.after(0, lambda: show_toast(
-                    self.winfo_toplevel(),
-                    "Toutes les tracks sont déjà encodées",
-                    kind="info"))
-                self._refresh_ai_status()
-                return
+            label = (f"Réencode TOUT ({backend})" if force
+                     else f"Encode embeddings ({backend})")
+            task = tasks.register(label, message="initialisation…")
 
-            n = len(todo)
-            self.after(0, lambda: show_toast(
-                self.winfo_toplevel(),
-                f"Encodage en cours : 0/{n} tracks (backend {backend})",
-                kind="info", duration_ms=4500))
+            try:
+                conn = library.get_connection()
+                if force:
+                    # Wipe existing embeddings so the regular query
+                    # surfaces every track
+                    conn.execute(
+                        "UPDATE tracks SET embedding = NULL, "
+                        "embedding_backend = NULL "
+                        "WHERE COALESCE(corrupt, 0) = 0")
+                    conn.commit()
+                todo = library.tracks_without_embedding(conn)
+                if not todo:
+                    tasks.complete(task.id, success=True,
+                                    message="Tout est déjà encodé")
+                    self._refresh_ai_status()
+                    return
 
-            done = errs = 0
-            import time
-            t0 = time.time()
-            for i, t in enumerate(todo, 1):
-                try:
-                    vec = embeddings.embed(t["path"], backend=backend)
-                    if vec is not None and float(vec.sum()) != 0.0:
-                        library.set_embedding(conn, t["path"],
-                                                vec, backend=backend)
-                        done += 1
-                    else:
+                n = len(todo)
+                tasks.update(task.id, progress=0.0,
+                              message=f"0/{n} tracks")
+
+                done = errs = 0
+                import time
+                t0 = time.time()
+                for i, t in enumerate(todo, 1):
+                    try:
+                        vec = embeddings.embed(t["path"], backend=backend)
+                        if vec is not None and float(vec.sum()) != 0.0:
+                            library.set_embedding(conn, t["path"],
+                                                    vec, backend=backend)
+                            done += 1
+                        else:
+                            errs += 1
+                    except Exception:
                         errs += 1
-                except Exception:
-                    errs += 1
-                # Lightweight live status — refresh AI label every 25 tracks
-                if i % 25 == 0 or i == n:
-                    elapsed = time.time() - t0
-                    rate = i / elapsed if elapsed > 0 else 0
-                    eta_s = (n - i) / rate if rate > 0 else 0
-                    self.after(0, lambda i=i, n=n, e=int(eta_s):
-                                self._ai_status.configure(
-                                    text=f"Backend : {backend}  ·  "
-                                         f"encodage {i}/{n}  "
-                                         f"(ETA {e//60}min{e%60:02d})",
-                                    text_color=COLORS["accent"]))
+                    # Push progress every 5 tracks (cheap) so the tray bar
+                    # actually moves
+                    if i % 5 == 0 or i == n:
+                        elapsed = time.time() - t0
+                        rate = i / elapsed if elapsed > 0 else 0
+                        eta_s = (n - i) / rate if rate > 0 else 0
+                        from pathlib import Path
+                        tasks.update(
+                            task.id,
+                            progress=i / n,
+                            eta_s=eta_s,
+                            message=f"{i}/{n}  ·  "
+                                    f"{Path(t['path']).name[:32]}")
 
-            self.after(0, lambda d=done, e=errs: show_toast(
-                self.winfo_toplevel(),
-                f"Encodage fini : {d} OK, {e} erreurs",
-                kind="success" if e == 0 else "warning",
-                duration_ms=5000))
-            self._refresh_ai_status()
+                tasks.complete(
+                    task.id,
+                    success=(errs == 0),
+                    message=f"{done} OK, {errs} erreurs")
+                self._refresh_ai_status()
+            except Exception as e:
+                tasks.complete(task.id, success=False,
+                                message=f"Erreur : {str(e)[:60]}")
 
         threading.Thread(target=work, daemon=True,
                           name="bulk-embed").start()
 
     def _refresh_ai_status(self):
-        """Re-read the encoded-count + backend, redraw the AI label."""
-        try:
-            from app.engine import embeddings
-            from app.engine.library import get_connection, embedding_count
-            done, total = embedding_count(get_connection())
-            self.after(0, lambda d=done, t=total: self._ai_status.configure(
-                text=f"Backend : {embeddings.best_backend()}  ·  "
-                     f"{d}/{t} tracks encodés",
-                text_color=(COLORS["success"] if d == t and t > 0
-                             else COLORS["text"])))
-        except Exception:
-            pass
+        """Re-read the encoded-count + backend, redraw the AI label.
+        Run in a thread so a slow DB doesn't stall the UI build."""
+        import threading
+
+        def work():
+            try:
+                from app.engine import embeddings
+                from app.engine.library import (get_connection,
+                                                  embedding_count)
+                done, total = embedding_count(get_connection())
+                backend = embeddings.best_backend()
+                self.after(0, lambda d=done, t=total, b=backend:
+                           self._ai_status.configure(
+                               text=f"Backend : {b}  ·  "
+                                    f"{d}/{t} tracks encodés",
+                               text_color=(COLORS["success"]
+                                            if d == t and t > 0
+                                            else COLORS["text"])))
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True,
+                          name="ai-status-refresh").start()
+
+    def _refresh_cooc_status(self):
+        """Re-read scraped-set + pair counts. Threaded — pair_count is
+        a COUNT(*) on track_pairs, list_cached_tracklists globs
+        data/tracklists/, both can be slow on a busy disk."""
+        import threading
+
+        def work():
+            try:
+                from app.engine import cooccurrence
+                from app.engine.tracklists import list_cached_tracklists
+                from app.engine.library import get_connection
+                n_sets = len(list_cached_tracklists())
+                n_pairs = cooccurrence.pair_count(get_connection())
+                self.after(0, lambda s=n_sets, p=n_pairs:
+                           self._cooc_status.configure(
+                               text=f"{s} sets en cache  ·  "
+                                    f"{p} paires co-jouées",
+                               text_color=COLORS["text"]))
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True,
+                          name="cooc-status-refresh").start()
 
     def _run_repair(self, *, dry_run: bool):
         """Walk every configured music folder, fix any pre-magic garbage.
