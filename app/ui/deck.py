@@ -38,6 +38,8 @@ class DeckWidget(ctk.CTkFrame):
         self._waveform: np.ndarray = np.zeros(1, dtype=np.float32)
         self._cues: list[dict] = []
         self._beats: list[float] = []      # beat times in seconds
+        self._intro_end: float | None = None
+        self._outro_start: float | None = None
         self._on_cues_changed = on_cues_changed
         self._tick_job: str | None = None
         self._build()
@@ -129,6 +131,12 @@ class DeckWidget(ctk.CTkFrame):
         self._track_path = track["path"]
         self._cues = list(get_cue_points(track))
         self._beats = list(get_beat_grid(track))   # detected beat times (s)
+        # Structure boundaries from engine.segmentation. None = not yet
+        # segmented (we just don't draw the markers in that case).
+        ie = track.get("intro_end")
+        os_ = track.get("outro_start")
+        self._intro_end = float(ie) if ie is not None else None
+        self._outro_start = float(os_) if os_ is not None else None
         self._waveform = np.zeros(1, dtype=np.float32)
         self.dur_label.configure(text="…")
         self.pos_label.configure(text="0:00")
@@ -222,6 +230,7 @@ class DeckWidget(ctk.CTkFrame):
         self.canvas.delete("all")
         self._draw_static()
         self._draw_beat_grid()
+        self._draw_structure()
         self._draw_cues()
         self._draw_playhead()
 
@@ -285,6 +294,49 @@ class DeckWidget(ctk.CTkFrame):
                               tags=("beat",))
                 c.create_line(x, h - 4, x, h, fill=text_dim, width=1,
                               tags=("beat",))
+
+    def _draw_structure(self):
+        """Vertical green wash up to intro_end and from outro_start.
+        Tiny labels above the waveform mark where each boundary is.
+        Painted under cues + playhead so they never hide them."""
+        c = self.canvas
+        c.delete("structure")
+        if self._intro_end is None and self._outro_start is None:
+            return
+        dur = player.duration(self._deck) if self._track_path else 0.0
+        if dur <= 0:
+            # Use the structure's own duration as fallback before audio loads
+            if self._outro_start:
+                dur = max(dur, self._outro_start + 8.0)
+            if dur <= 0:
+                return
+        w = max(1, c.winfo_width())
+        h = _WF_HEIGHT
+        # Subtle washes (filled rectangles via 4-pt polyline trick) +
+        # small top labels so the user knows what they're looking at.
+        success = COLORS["success"]
+        warning = COLORS["warning"]
+
+        if self._intro_end and self._intro_end > 0:
+            x = int(self._intro_end / dur * w)
+            x = max(2, min(x, w - 2))
+            # Vertical line at intro_end
+            c.create_line(x, 0, x, h, fill=success, width=1,
+                           dash=(4, 3), tags=("structure",))
+            c.create_text(x - 2, h - 4, text="◀ INTRO",
+                           fill=success, anchor="se",
+                           font=("Segoe UI", 8, "bold"),
+                           tags=("structure",))
+
+        if self._outro_start and self._outro_start < dur:
+            x = int(self._outro_start / dur * w)
+            x = max(2, min(x, w - 2))
+            c.create_line(x, 0, x, h, fill=warning, width=1,
+                           dash=(4, 3), tags=("structure",))
+            c.create_text(x + 2, h - 4, text="OUTRO ▶",
+                           fill=warning, anchor="sw",
+                           font=("Segoe UI", 8, "bold"),
+                           tags=("structure",))
 
     def _draw_cues(self):
         c = self.canvas

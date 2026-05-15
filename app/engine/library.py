@@ -124,6 +124,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             # encoded; bulk_encode() in engine.embeddings populates it.
             ("embedding",      "BLOB"),
             ("embedding_backend", "TEXT"),  # 'lite'/'clap'/'panns'
+            # Structure boundaries (seconds) — populated by
+            # engine.segmentation.detect_structure during analyse.
+            # Used by the Mixer to suggest mix points and to score
+            # outro_A vs intro_B rather than whole-track audio.
+            ("intro_end",      "REAL"),
+            ("outro_start",    "REAL"),
+            ("drops",          "TEXT"),    # JSON list of seconds
         ]:
             if col not in existing_cols:
                 try:
@@ -236,6 +243,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("corrupt",        "INTEGER DEFAULT 0"),
         ("embedding",      "BLOB"),
         ("embedding_backend", "TEXT"),
+        ("intro_end",      "REAL"),
+        ("outro_start",    "REAL"),
+        ("drops",          "TEXT"),
     ]:
         if col not in existing_cols:
             try:
@@ -258,15 +268,23 @@ def upsert_track(conn: sqlite3.Connection, info: dict):
     beat_grid = payload.get("beat_grid")
     payload["beat_grid"] = (json.dumps(list(beat_grid))
                               if beat_grid else None)
+    # Same for drops list (segmentation output)
+    drops = payload.get("drops")
+    payload["drops"] = (json.dumps(list(drops))
+                          if drops else None)
+    payload.setdefault("intro_end", None)
+    payload.setdefault("outro_start", None)
     # Don't blast user-set fields — leave them NULL on insert, let the
     # UPDATE clause skip them via COALESCE
     conn.execute("""
         INSERT INTO tracks
             (path, title, bpm, key, camelot, energy, duration,
-             key_confidence, added_at, beat_grid)
+             key_confidence, added_at, beat_grid,
+             intro_end, outro_start, drops)
         VALUES
             (:path, :title, :bpm, :key, :camelot, :energy, :duration,
-             :key_confidence, :added_at, :beat_grid)
+             :key_confidence, :added_at, :beat_grid,
+             :intro_end, :outro_start, :drops)
         ON CONFLICT(path) DO UPDATE SET
             title          = :title,
             bpm            = CASE WHEN tracks.bpm_locked = 1
@@ -276,9 +294,63 @@ def upsert_track(conn: sqlite3.Connection, info: dict):
             energy         = :energy,
             duration       = :duration,
             key_confidence = :key_confidence,
-            beat_grid      = COALESCE(:beat_grid, tracks.beat_grid)
+            beat_grid      = COALESCE(:beat_grid, tracks.beat_grid),
+            intro_end      = COALESCE(:intro_end, tracks.intro_end),
+            outro_start    = COALESCE(:outro_start, tracks.outro_start),
+            drops          = COALESCE(:drops, tracks.drops)
     """, payload)
     conn.commit()
+
+
+def set_structure(conn: sqlite3.Connection, path: str, *,
+                   intro_end: float, outro_start: float,
+                   drops: list[float] | None = None) -> None:
+    """Persist segmentation output for one track."""
+    import json
+    drops_json = json.dumps(list(drops)) if drops else None
+    conn.execute(
+        "UPDATE tracks SET intro_end = ?, outro_start = ?, drops = ? "
+        "WHERE path = ?",
+        (float(intro_end), float(outro_start), drops_json, path))
+    conn.commit()
+
+
+def get_drops(track: dict) -> list[float]:
+    """Decode the drops JSON column into a list of seconds."""
+    raw = track.get("drops")
+    if not raw:
+        return []
+    try:
+        import json
+        return [float(t) for t in json.loads(raw)]
+    except Exception:
+        return []
+
+
+def tracks_without_structure(conn: sqlite3.Connection,
+                              limit: int | None = None) -> list[dict]:
+    """Tracks that haven't been segmented yet. Used by Settings'
+    'Detect intros/outros' bulk button to retrofit older entries
+    that pre-date the segmentation column."""
+    q = ("SELECT * FROM tracks "
+         "WHERE intro_end IS NULL "
+         "AND COALESCE(corrupt, 0) = 0 "
+         "ORDER BY added_at DESC")
+    if limit is not None:
+        q += f" LIMIT {int(limit)}"
+    return [dict(r) for r in conn.execute(q).fetchall()]
+
+
+def structure_count(conn: sqlite3.Connection) -> tuple[int, int]:
+    """(segmented, total non-corrupt) for the Settings status line."""
+    total = int(conn.execute(
+        "SELECT COUNT(*) FROM tracks "
+        "WHERE COALESCE(corrupt, 0) = 0").fetchone()[0])
+    done = int(conn.execute(
+        "SELECT COUNT(*) FROM tracks "
+        "WHERE intro_end IS NOT NULL "
+        "AND COALESCE(corrupt, 0) = 0").fetchone()[0])
+    return done, total
 
 
 def get_beat_grid(track: dict) -> list[float]:

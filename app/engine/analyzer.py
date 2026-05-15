@@ -131,6 +131,16 @@ def analyze_track(path: str) -> dict:
     camelot = CAMELOT_MAP.get(key, "?")
     duration = get_duration(path)
 
+    # Structure boundaries (intro/outro/drops). Best-effort — if it
+    # fails, we just leave the fields None and the Mixer falls back to
+    # whole-track scoring. Reads the FULL file at low SR (8 kHz) since
+    # outro detection needs the tail librosa.load truncated above.
+    try:
+        from app.engine.segmentation import detect_structure
+        struct = detect_structure(path)
+    except Exception:
+        struct = {"intro_end": None, "outro_start": None, "drops": []}
+
     # Extract title from filename
     title = Path(path).stem
     # Clean numbered prefixes like "01 - "
@@ -147,6 +157,9 @@ def analyze_track(path: str) -> dict:
         "duration": duration,
         "key_confidence": key_confidence,
         "beat_grid": beat_grid,
+        "intro_end":   struct.get("intro_end"),
+        "outro_start": struct.get("outro_start"),
+        "drops":       struct.get("drops") or [],
     }
 
 

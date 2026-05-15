@@ -274,6 +274,42 @@ class SettingsPage(ctk.CTkFrame):
             command=lambda: self._run_embed(force=True),
         ).pack(side="left", padx=6)
 
+        # ── AI · Structure (intro / outro) ───────────────────
+        # Detects intro_end + outro_start per track. Used by the Mixer
+        # to suggest mix points and to score outro_A vs intro_B
+        # rather than the whole-track audio.
+        self._section(scroll, "AI · Structure (intro / outro)")
+        struct_card = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"],
+                                    corner_radius=8)
+        struct_card.pack(fill="x", pady=3)
+
+        self._struct_status = ctk.CTkLabel(
+            struct_card, text="Chargement…",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_dim"])
+        self._struct_status.pack(anchor="w", padx=12, pady=(10, 4))
+        self.after_idle(self._refresh_struct_status)
+
+        ctk.CTkLabel(
+            struct_card,
+            text=("Détecte intros + outros à partir de l'enveloppe "
+                   "RMS. Signal clé pour suggérer le bon point de "
+                   "mix dans le Mixer."),
+            font=ctk.CTkFont(size=10), text_color=COLORS["text_dim"],
+            justify="left", wraplength=720
+        ).pack(anchor="w", padx=12, pady=(0, 6))
+
+        struct_row = ctk.CTkFrame(struct_card, fg_color="transparent")
+        struct_row.pack(fill="x", padx=12, pady=(0, 10))
+        ctk.CTkButton(
+            struct_row, text="Segmenter les nouveaux",
+            width=200, height=32,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["bg_dark"],
+            command=self._run_segmentation,
+        ).pack(side="left", padx=(0, 6))
+
         # ── AI · Co-occurrence (1001tracklists) ───────────────
         # Mines real DJ sets to find which local tracks pros mix
         # together. Adds up to +15 raw points to the transition score
@@ -479,6 +515,79 @@ class SettingsPage(ctk.CTkFrame):
                 pass
         threading.Thread(target=work, daemon=True,
                           name="ai-status-refresh").start()
+
+    def _refresh_struct_status(self):
+        """Off-thread count of segmented vs total tracks."""
+        import threading
+
+        def work():
+            try:
+                from app.engine.library import (get_connection,
+                                                  structure_count)
+                done, total = structure_count(get_connection())
+                self.after(0, lambda d=done, t=total:
+                           self._struct_status.configure(
+                               text=f"{d}/{t} tracks segmentées",
+                               text_color=(COLORS["success"]
+                                            if d == t and t > 0
+                                            else COLORS["text"])))
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True,
+                          name="struct-status-refresh").start()
+
+    def _run_segmentation(self):
+        """Detect intro/outro on every un-segmented track. Threaded;
+        progress reported through the activity tray."""
+        import threading
+        from app.engine import library, tasks
+        from app.engine.segmentation import detect_structure
+
+        def work():
+            task = tasks.register("Segmentation intro/outro",
+                                    message="recherche…")
+            try:
+                conn = library.get_connection()
+                todo = library.tracks_without_structure(conn)
+                if not todo:
+                    tasks.complete(task.id, success=True,
+                                    message="Tout est déjà segmenté")
+                    self._refresh_struct_status()
+                    return
+                n = len(todo)
+                done = errs = 0
+                import time
+                t0 = time.time()
+                from pathlib import Path
+                for i, t in enumerate(todo, 1):
+                    try:
+                        s = detect_structure(t["path"])
+                        library.set_structure(
+                            conn, t["path"],
+                            intro_end=s.get("intro_end") or 0.0,
+                            outro_start=s.get("outro_start") or 0.0,
+                            drops=s.get("drops") or [])
+                        done += 1
+                    except Exception:
+                        errs += 1
+                    if i % 5 == 0 or i == n:
+                        elapsed = time.time() - t0
+                        rate = i / elapsed if elapsed > 0 else 0
+                        eta_s = (n - i) / rate if rate > 0 else 0
+                        tasks.update(
+                            task.id, progress=i / n, eta_s=eta_s,
+                            message=f"{i}/{n}  ·  "
+                                    f"{Path(t['path']).name[:32]}")
+                tasks.complete(
+                    task.id, success=(errs == 0),
+                    message=f"{done} OK, {errs} erreurs")
+                self._refresh_struct_status()
+            except Exception as e:
+                tasks.complete(task.id, success=False,
+                                message=f"Erreur : {str(e)[:60]}")
+
+        threading.Thread(target=work, daemon=True,
+                          name="bulk-segment").start()
 
     def _refresh_cooc_status(self):
         """Re-read scraped-set + pair counts. Threaded — pair_count is
