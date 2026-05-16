@@ -193,6 +193,13 @@ class LibraryPage(ctk.CTkFrame):
         # We bind on the inner tree widget so the click hits the actual rows;
         # binding on the FastList frame would miss row coordinates.
         self.table.tree.bind("<Button-3>", self._on_right_click)
+        # Keyboard rating: with one or more rows selected, pressing
+        # 0/1/2/3/4/5 sets the rating directly. Power-DJ workflow —
+        # blast through 100 tracks rating in 30s.
+        for k in range(0, 6):
+            self.table.tree.bind(
+                f"<Key-{k}>",
+                lambda _e, r=k: self._kbd_set_rating(r))
 
         self._sync_throttle = UiThrottle(self, interval_ms=100)
 
@@ -456,6 +463,22 @@ class LibraryPage(ctk.CTkFrame):
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    def _kbd_set_rating(self, rating: int) -> str:
+        """Keyboard 0-5 rating shortcut on the Library FastList."""
+        sel = self._selected_tracks()
+        if not sel:
+            return "break"
+        self._bulk_set_rating(sel, rating)
+        try:
+            from app.ui.toast import show_toast
+            label = "★" * rating if rating else "0★"
+            show_toast(self.winfo_toplevel(),
+                        f"{len(sel)} track(s) → {label}",
+                        kind="success", duration_ms=1500)
+        except Exception:
+            pass
+        return "break"
 
     def _bulk_set_rating(self, tracks: list[dict], rating: int):
         conn = get_connection()

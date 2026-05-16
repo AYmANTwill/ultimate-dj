@@ -22,7 +22,7 @@ import numpy as np
 
 from app.config import COLORS
 from app.engine import player
-from app.engine.library import get_cue_points, get_beat_grid
+from app.engine.library import get_cue_points, get_beat_grid, get_drops
 from app.ui.helpers import font
 
 
@@ -40,6 +40,7 @@ class DeckWidget(ctk.CTkFrame):
         self._beats: list[float] = []      # beat times in seconds
         self._intro_end: float | None = None
         self._outro_start: float | None = None
+        self._drops: list[float] = []
         self._on_cues_changed = on_cues_changed
         self._tick_job: str | None = None
         self._build()
@@ -137,6 +138,7 @@ class DeckWidget(ctk.CTkFrame):
         os_ = track.get("outro_start")
         self._intro_end = float(ie) if ie is not None else None
         self._outro_start = float(os_) if os_ is not None else None
+        self._drops = list(get_drops(track))
         self._waveform = np.zeros(1, dtype=np.float32)
         self.dur_label.configure(text="…")
         self.pos_label.configure(text="0:00")
@@ -337,6 +339,17 @@ class DeckWidget(ctk.CTkFrame):
                            fill=warning, anchor="sw",
                            font=("Segoe UI", 8, "bold"),
                            tags=("structure",))
+
+        # Drops — small downward triangles at the top of the canvas
+        # (subtle, doesn't compete with cue markers below)
+        accent2 = COLORS["accent2"]
+        for t_drop in self._drops:
+            x = int(t_drop / dur * w)
+            if x < 2 or x > w - 2:
+                continue
+            c.create_polygon(x - 4, 0, x + 4, 0, x, 6,
+                              fill=accent2, outline="",
+                              tags=("structure",))
 
     def _draw_cues(self):
         c = self.canvas

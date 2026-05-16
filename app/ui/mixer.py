@@ -119,9 +119,17 @@ class MixerPage(ctk.CTkFrame):
              ("bpm",   "BPM",    60),
              ("cam",   "Cam",    60)],
             on_select=lambda rows: self._load_b(rows[0]) if rows else None,
+            on_double_click=lambda row: self._show_breakdown(row),
             height=12,
         )
         self.tx_table.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        # Hint label so the user discovers double-click
+        ctk.CTkLabel(
+            right,
+            text="Double-clic sur une transition pour voir le détail "
+                 "du score (key / BPM / audio / co-occurrence…)",
+            font=font(10), text_color=COLORS["text_dim"]
+        ).pack(anchor="w", padx=12, pady=(0, 6))
 
         # ── Dual-deck preview (bottom pane of the vertical sash) ─
         # Wrapping the explanatory header + the decks_row in a single
@@ -323,6 +331,98 @@ class MixerPage(ctk.CTkFrame):
             log_error("find_transitions failed", e)
             transitions = []
         self.after(0, lambda tx=transitions: self._render_transitions(tx))
+
+    def _show_breakdown(self, row: tuple):
+        """Modal popup explaining how this transition scored what it
+        scored. Helps the user trust the AI's choices (or not)."""
+        if not self._selected:
+            return
+        title_shown = row[1] if len(row) > 1 else ""
+        match = next(
+            (t for (t, _s) in self._transitions
+             if (t["title"] or "?")[:60] == title_shown),
+            None)
+        if not match:
+            return
+        from app.engine.library import transition_score_breakdown
+        bd = transition_score_breakdown(self._selected, match)
+
+        win = ctk.CTkToplevel(self)
+        win.title("Score de transition — détail")
+        win.geometry("520x420")
+        win.configure(fg_color=COLORS["bg_dark"])
+        win.transient(self.winfo_toplevel())
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+
+        ctk.CTkLabel(
+            win, text=f"Score total : {bd['total']}/100",
+            font=font(20, "bold"),
+            text_color=COLORS["accent"]).pack(anchor="w", padx=20,
+                                                pady=(20, 4))
+        ctk.CTkLabel(
+            win,
+            text=f"{(self._selected.get('title') or '?')[:40]}  →  "
+                 f"{(match.get('title') or '?')[:40]}",
+            font=font(11), text_color=COLORS["text_dim"]
+        ).pack(anchor="w", padx=20, pady=(0, 12))
+
+        body = ctk.CTkFrame(win, fg_color=COLORS["bg_card"],
+                             corner_radius=8)
+        body.pack(fill="both", expand=True, padx=20, pady=(0, 12))
+
+        for axis, color in [("key", COLORS["accent"]),
+                              ("bpm", COLORS["warning"]),
+                              ("energy", COLORS["success"]),
+                              ("audio", COLORS["accent2"])]:
+            d = bd[axis]
+            row_f = ctk.CTkFrame(body, fg_color="transparent")
+            row_f.pack(fill="x", padx=12, pady=4)
+            ctk.CTkLabel(
+                row_f, text=axis.upper(), width=70, anchor="w",
+                font=font(11, "bold"), text_color=color
+            ).pack(side="left")
+            ctk.CTkLabel(
+                row_f, text=f"{d['score']:5.1f}", width=50,
+                font=font(11), text_color=COLORS["text"]
+            ).pack(side="left")
+            ctk.CTkLabel(
+                row_f, text=f"× {d['weight']:.2f} = "
+                            f"{d['score'] * d['weight']:5.1f}",
+                width=110, font=font(10),
+                text_color=COLORS["text_dim"]
+            ).pack(side="left")
+            ctk.CTkLabel(
+                row_f, text=d["label"][:32], anchor="w",
+                font=font(10), text_color=COLORS["text_dim"]
+            ).pack(side="left", padx=(8, 0), fill="x", expand=True)
+
+        # Bonuses + penalties
+        ctk.CTkFrame(body, fg_color=COLORS["bg_input"], height=1
+                      ).pack(fill="x", padx=12, pady=(8, 4))
+        for label, val, sign_color in [
+            ("Genre bonus",    bd["genre_bonus"],   COLORS["success"]),
+            ("Rating modifier", bd["rating_mod"],    COLORS["warning"]),
+            ("Same artist pen", bd["same_artist"],   COLORS["error"]),
+            ("Co-occurrence",   bd["cooc_bonus"],    COLORS["accent2"]),
+        ]:
+            if val == 0:
+                continue
+            sign = "+" if val > 0 else ""
+            ctk.CTkLabel(
+                body, text=f"{label:24s}  {sign}{val:.1f}",
+                font=font(11), text_color=sign_color, anchor="w",
+                justify="left"
+            ).pack(anchor="w", padx=12, pady=2)
+
+        ctk.CTkButton(
+            win, text="Fermer", width=100, height=32,
+            fg_color=COLORS["bg_card"], hover_color=COLORS["bg_input"],
+            text_color=COLORS["text"],
+            command=win.destroy
+        ).pack(pady=(0, 16))
 
     def _load_b(self, row: tuple):
         """Load the chosen transition target on Deck B for crossfade test."""

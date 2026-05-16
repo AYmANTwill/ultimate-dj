@@ -1057,6 +1057,106 @@ def transition_score(track_a: dict, track_b: dict) -> float:
     return round(max(0.0, min(100.0, score)), 1)
 
 
+def transition_score_breakdown(track_a: dict, track_b: dict) -> dict:
+    """Same calculation as transition_score, but returns the per-axis
+    breakdown so the UI can explain WHY a transition scored what it
+    scored. Designed to be displayed as a tooltip / details popup.
+
+    Returns::
+
+        {
+          "key":          {"score": 0-100, "weight": 0.40-0.50, "label": "8A → 9A"},
+          "bpm":          {"score": 0-100, "weight": 0.30-0.35, "label": "124→126 (+1.6%)"},
+          "energy":       {"score": 0-100, "weight": 0.10-0.15, "label": "6.0→6.5 (build)"},
+          "audio":        {"score": 0-100, "weight": 0.0-0.20,  "label": "cosine 0.84"},
+          "genre_bonus":  0|5|10,
+          "rating_mod":   -10..+5,
+          "same_artist":  -8|0,
+          "cooc_bonus":   0..15,
+          "total":        0-100,
+        }
+    """
+    key = _key_match_score(track_a.get("camelot", ""),
+                           track_b.get("camelot", ""))
+    bpm = _bpm_match_score(float(track_a.get("bpm") or 0),
+                            float(track_b.get("bpm") or 0))
+    energy = _energy_flow_score(track_a.get("energy"),
+                                 track_b.get("energy"))
+    emb_a = get_embedding(track_a)
+    emb_b = get_embedding(track_b)
+    has_emb = emb_a is not None and emb_b is not None
+    if has_emb:
+        from app.engine.embeddings import cosine
+        c = cosine(emb_a, emb_b)
+        audio_sim = max(0.0, min(100.0, (c + 1.0) * 50.0))
+        audio_label = f"cosine {c:.2f}"
+        weights = {"key": 0.40, "bpm": 0.30, "energy": 0.10, "audio": 0.20}
+    else:
+        audio_sim = 0.0
+        audio_label = "(track non encodée)"
+        weights = {"key": 0.50, "bpm": 0.35, "energy": 0.15, "audio": 0.0}
+
+    try:
+        from app.engine.cooccurrence import cooccurrence_score
+        cooc = cooccurrence_score(_thread_conn(),
+                                    track_a.get("path", ""),
+                                    track_b.get("path", ""))
+    except Exception:
+        cooc = 0.0
+    coop_bonus = round(min(15.0, cooc * 0.15), 1)
+
+    g_a = (track_a.get("genre") or "").lower().strip()
+    g_b = (track_b.get("genre") or "").lower().strip()
+    genre_bonus = 0.0
+    if g_a and g_b:
+        if g_a == g_b or g_a in g_b or g_b in g_a:
+            genre_bonus = 10.0
+        elif set(g_a.split()) & set(g_b.split()):
+            genre_bonus = 5.0
+
+    r_a = int(track_a.get("rating") or 0)
+    r_b = int(track_b.get("rating") or 0)
+    rating_mod = 0.0
+    if r_a > 0 and r_b > 0:
+        if r_b >= r_a:
+            rating_mod = 5.0
+        elif r_b == r_a - 1:
+            rating_mod = -3.0
+        else:
+            rating_mod = -10.0
+
+    artist_a = _artist_from_title(track_a.get("title") or "")
+    artist_b = _artist_from_title(track_b.get("title") or "")
+    same_artist = -8.0 if artist_a and artist_a == artist_b else 0.0
+
+    return {
+        "key": {
+            "score": round(key, 1), "weight": weights["key"],
+            "label": f"{track_a.get('camelot', '?')} → "
+                     f"{track_b.get('camelot', '?')}",
+        },
+        "bpm": {
+            "score": round(bpm, 1), "weight": weights["bpm"],
+            "label": f"{(track_a.get('bpm') or 0):.0f} → "
+                     f"{(track_b.get('bpm') or 0):.0f}",
+        },
+        "energy": {
+            "score": round(energy, 1), "weight": weights["energy"],
+            "label": f"{(track_a.get('energy') or 0):.1f} → "
+                     f"{(track_b.get('energy') or 0):.1f}",
+        },
+        "audio": {
+            "score": round(audio_sim, 1), "weight": weights["audio"],
+            "label": audio_label,
+        },
+        "genre_bonus":  genre_bonus,
+        "rating_mod":   rating_mod,
+        "same_artist":  same_artist,
+        "cooc_bonus":   coop_bonus,
+        "total":        transition_score(track_a, track_b),
+    }
+
+
 def _thread_conn():
     """Helper for transition_score's cooccurrence lookup — uses the
     thread-local DB conn so we don't pay a fresh connect per scoring
