@@ -52,6 +52,10 @@ class Task:
     eta_s: Optional[float] = None
     started_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
+    # Cooperative cancel: workers check this on each iteration and exit
+    # gracefully. Set via cancel(task_id). Threading.Event so blocking
+    # waits in the worker can also be unblocked.
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
     @property
     def is_active(self) -> bool:
@@ -60,6 +64,9 @@ class Task:
         if self.finished_at is None:
             return True
         return (time.time() - self.finished_at) < _FINISHED_HOLD_S
+
+    def cancel_requested(self) -> bool:
+        return self.cancel_event.is_set()
 
 
 _lock = threading.RLock()
@@ -125,10 +132,16 @@ def complete(task_id: int, *, success: bool = True,
 
 
 def cancel(task_id: int, *, message: str = "Annulé") -> None:
+    """Request cancellation. The worker is responsible for checking
+    ``task.cancel_requested()`` periodically and breaking out — we
+    don't kill threads. The status flips to 'cancelled' immediately
+    so the tray shows it, and the cancel_event is set so any workers
+    waiting on a blocking event wake up."""
     with _lock:
         t = _tasks.get(task_id)
         if t is None:
             return
+        t.cancel_event.set()
         t.status = "cancelled"
         if message:
             t.message = message

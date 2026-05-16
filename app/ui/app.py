@@ -97,6 +97,25 @@ class App(ctk.CTk):
         from app.ui.activity_tray import ActivityTray
         self._activity_tray = ActivityTray(self)
 
+        # Global keyboard nav: Ctrl+1..9 → switch to the n-th page in
+        # sidebar order, Ctrl+, → Settings (Mac convention).
+        self._wire_keyboard_shortcuts()
+
+    def _wire_keyboard_shortcuts(self):
+        """Bind Ctrl+1..9 to the page-switch order so power users
+        never have to leave the keyboard."""
+        # Flatten SIDEBAR_GROUPS to a single ordered list of names
+        page_order: list[str] = []
+        for _section, items in SIDEBAR_GROUPS:
+            for label, _cls in items:
+                page_order.append(label)
+        for i, name in enumerate(page_order[:9], 1):
+            self.bind(f"<Control-Key-{i}>",
+                       lambda _e, n=name: self._switch_page(n))
+        # Mac-style "preferences"
+        self.bind("<Control-Key-comma>",
+                   lambda _e: self._switch_page("Settings"))
+
         # Background auto-scan: on every launch, walk the music folders
         # configured in Settings, add any new audio files to the DB and
         # remove orphans whose path no longer exists. Runs after_idle so

@@ -177,6 +177,18 @@ class ActivityTray(ctk.CTkFrame):
                 top, text=right, font=ctk.CTkFont(size=10),
                 text_color=COLORS["text_dim"]
             ).pack(side="right")
+        # Per-task cancel button while running — clicking sets the
+        # task's cancel_event so the worker bails out cleanly on its
+        # next iteration check.
+        if t.status == "running":
+            ctk.CTkButton(
+                top, text="✕", width=18, height=18,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                fg_color="transparent",
+                hover_color=COLORS["error"],
+                text_color=COLORS["text_dim"],
+                command=lambda tid=t.id: task_registry.cancel(tid)
+            ).pack(side="right", padx=(2, 0))
 
         # Progress bar (only while running)
         if t.status == "running" and t.progress >= 0:

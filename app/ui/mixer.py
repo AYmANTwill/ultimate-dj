@@ -214,15 +214,21 @@ class MixerPage(ctk.CTkFrame):
             command=self._sync_b_to_a,
             state="disabled")
         self.sync_btn.pack(side="right")
-        # Friendly hint when on the lower-quality backend so the user
-        # knows why the stretch sounds "smeared" on bigger ratios.
+        # When on the fallback backend, surface a clickable hint that
+        # opens breakfastquay's release page in the system browser
+        # (one less manual googling step for the user).
         if backend_name != "rubberband":
-            hint = ctk.CTkLabel(
+            import webbrowser
+            ctk.CTkButton(
                 b_head,
-                text="(installe rubberband.exe pour qualité +)",
-                font=font(9),
-                text_color=COLORS["text_dim"])
-            hint.pack(side="right", padx=4)
+                text="ⓘ installe rubberband pour qualité +",
+                font=font(9), height=20, width=210,
+                fg_color="transparent",
+                hover_color=COLORS["bg_input"],
+                text_color=COLORS["text_dim"],
+                command=lambda: webbrowser.open(
+                    "https://breakfastquay.com/rubberband/")
+            ).pack(side="right", padx=4)
         self.sync_status = ctk.CTkLabel(
             b_head, text="", font=font(10),
             text_color=COLORS["text_dim"])

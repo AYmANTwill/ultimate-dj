@@ -22,6 +22,26 @@ class SettingsPage(ctk.CTkFrame):
             text_color=COLORS["text"],
         ).pack(anchor="w", padx=30, pady=(24, 16))
 
+        # Sticky save bar at the bottom — pack BEFORE the scroll area
+        # (Tk packs in declaration order; side="bottom" pins to bottom)
+        # so it never scrolls out of reach. The duplicate Save Settings
+        # button further down still works as a fallback.
+        save_bar = ctk.CTkFrame(self, fg_color=COLORS["bg_card"],
+                                 corner_radius=0, height=52)
+        save_bar.pack(side="bottom", fill="x")
+        save_bar.pack_propagate(False)
+        ctk.CTkButton(
+            save_bar, text="💾  Save Settings", height=36, width=180,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["bg_dark"],
+            command=self._save).pack(side="right", padx=20, pady=8)
+        self.sticky_save_label = ctk.CTkLabel(
+            save_bar, text="", font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"])
+        self.sticky_save_label.pack(side="right", padx=8)
+
         scroll = ctk.CTkScrollableFrame(self, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=30, pady=(0, 16))
 
@@ -456,6 +476,12 @@ class SettingsPage(ctk.CTkFrame):
                 import time
                 t0 = time.time()
                 for i, t in enumerate(todo, 1):
+                    if task.cancel_requested():
+                        tasks.complete(
+                            task.id, success=False,
+                            message=f"Annulé à {i}/{n} ({done} encodés)")
+                        self._refresh_ai_status()
+                        return
                     try:
                         vec = embeddings.embed(t["path"], backend=backend)
                         if vec is not None and float(vec.sum()) != 0.0:
@@ -560,6 +586,12 @@ class SettingsPage(ctk.CTkFrame):
                 t0 = time.time()
                 from pathlib import Path
                 for i, t in enumerate(todo, 1):
+                    if task.cancel_requested():
+                        tasks.complete(
+                            task.id, success=False,
+                            message=f"Annulé à {i}/{n} ({done} segmentés)")
+                        self._refresh_struct_status()
+                        return
                     try:
                         s = detect_structure(t["path"])
                         library.set_structure(
