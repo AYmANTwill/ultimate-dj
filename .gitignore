@@ -64,6 +64,8 @@ desktop.ini
 .cache
 
 # ── PyInstaller artefacts ──────────────────────────────────────
-*.spec
+# (the spec file IS committed — only the build outputs are excluded)
 *.exe
 *.app
+build/
+dist/
