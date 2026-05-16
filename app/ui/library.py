@@ -19,7 +19,10 @@ from app.engine.library import (
     get_connection, all_tracks, search_tracks, delete_track, track_count,
     sync_library, find_duplicates, set_rating, override_bpm, set_genre,
 )
-from app.engine.analyzer import analyze_track, write_tags
+# analyze_track + write_tags pull librosa transitively — librosa is
+# slow to import (~1.5 s cold). They're only used in the reanalyse
+# and sync workers, both of which run off-thread, so we defer the
+# import to those callsites instead of paying the cost at app boot.
 from app.engine.library import upsert_track
 from app.logger import log_error, log_info, log_warning
 from app.ui.fastlist import FastList
@@ -531,6 +534,9 @@ class LibraryPage(ctk.CTkFrame):
             text_color=COLORS["accent"])
 
         def work():
+            # Deferred import — librosa is ~1.5 s to load on a cold
+            # filesystem cache; not paying that at app boot
+            from app.engine.analyzer import analyze_track, write_tags
             conn = get_connection()
             done = errs = 0
             for i, t in enumerate(tracks, 1):
@@ -672,6 +678,9 @@ class LibraryPage(ctk.CTkFrame):
     def _sync_thread(self, folders: list[str]):
         import time
         from app.engine import tasks as task_registry
+        # Deferred — librosa import is slow, paid here in the worker
+        # instead of at app boot
+        from app.engine.analyzer import analyze_track, write_tags
         task = task_registry.register(
             "Sync Library", message="scan du dossier…")
         try:

@@ -7,39 +7,71 @@ from __future__ import annotations
 import customtkinter as ctk
 
 from app.config import COLORS, apply_theme
+
+# Only HomePage is imported eagerly — it's the default landing page
+# and we want the window to paint as fast as possible. Every other
+# page is loaded on first navigation via _import_page() below. Saves
+# 3-5 s at boot because the heaviest modules (mixer pulls sounddevice
+# + player, download pulls yt_dlp transitively) only pay their cost
+# when the user actually clicks the sidebar entry.
 from app.ui.home import HomePage
-from app.ui.download import DownloadPage
-from app.ui.library import LibraryPage
-from app.ui.analyze import AnalyzePage
-from app.ui.mixer import MixerPage
-from app.ui.setlist import SetlistPage
-from app.ui.discover import DiscoverPage
-from app.ui.settings import SettingsPage
 
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 
-SIDEBAR_GROUPS: list[tuple[str, list[tuple[str, type]]]] = [
+# (sidebar_label, "module_path", "ClassName")
+# The class is resolved on first switch. Pages live in their own files
+# so the lazy import is a one-liner.
+SIDEBAR_GROUPS_LAZY: list[tuple[str, list[tuple[str, str, str]]]] = [
     ("HOME", [
-        ("Home",      HomePage),
+        ("Home",      "app.ui.home",     "HomePage"),
     ]),
     ("LIBRARY", [
-        ("Download",   DownloadPage),
-        ("Library",    LibraryPage),
-        ("Analyze",    AnalyzePage),
+        ("Download",  "app.ui.download", "DownloadPage"),
+        ("Library",   "app.ui.library",  "LibraryPage"),
+        ("Analyze",   "app.ui.analyze",  "AnalyzePage"),
     ]),
     ("MIX", [
-        ("Mixer",     MixerPage),
-        ("Setlist",   SetlistPage),
+        ("Mixer",     "app.ui.mixer",    "MixerPage"),
+        ("Setlist",   "app.ui.setlist",  "SetlistPage"),
     ]),
     ("DISCOVER", [
-        ("Discover",  DiscoverPage),
+        ("Discover",  "app.ui.discover", "DiscoverPage"),
     ]),
     ("CONFIG", [
-        ("Settings",  SettingsPage),
+        ("Settings",  "app.ui.settings", "SettingsPage"),
     ]),
+]
+
+
+# Backwards-compatible shape for any code that walked SIDEBAR_GROUPS
+# expecting the actual class. Resolves Home eagerly, the rest stay
+# as lazy markers (importlib.import_module on first switch_page).
+class _LazyPage:
+    """Placeholder that imports the real page class on first call."""
+    def __init__(self, module: str, name: str):
+        self._module = module
+        self._name = name
+        self._cls = None
+
+    def __call__(self, *args, **kwargs):
+        if self._cls is None:
+            import importlib
+            self._cls = getattr(
+                importlib.import_module(self._module), self._name)
+        return self._cls(*args, **kwargs)
+
+
+SIDEBAR_GROUPS: list[tuple[str, list[tuple[str, type]]]] = [
+    (section, [
+        (label,
+         HomePage if name == "HomePage" and mod == "app.ui.home"
+         else _LazyPage(mod, name))
+        for (label, mod, name) in items
+    ])
+    for section, items in SIDEBAR_GROUPS_LAZY
 ]
 
 

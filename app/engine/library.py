@@ -103,6 +103,22 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_track_pairs_a "
             "ON track_pairs(path_a)")
+        # User feedback on transitions (👍 / 👎) — see engine.feedback.
+        # Created here so transition_score's lookup never trips on a
+        # missing-table error on a fresh install.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS transition_feedback (
+                path_a     TEXT NOT NULL,
+                path_b     TEXT NOT NULL,
+                like_score INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                source     TEXT,
+                PRIMARY KEY (path_a, path_b)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feedback_a "
+            "ON transition_feedback(path_a)")
         # Add columns to old DBs that pre-date the new schema
         existing_cols = {row[1] for row in conn.execute(
             "PRAGMA table_info(tracks)").fetchall()}
@@ -226,6 +242,16 @@ def init_schema(conn: sqlite3.Connection) -> None:
             path_b TEXT NOT NULL,
             weight REAL NOT NULL DEFAULT 0,
             sets   INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (path_a, path_b)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS transition_feedback (
+            path_a     TEXT NOT NULL,
+            path_b     TEXT NOT NULL,
+            like_score INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            source     TEXT,
             PRIMARY KEY (path_a, path_b)
         )
     """)
@@ -1067,8 +1093,19 @@ def transition_score(track_a: dict, track_b: dict) -> float:
         # Map model output [0, 100] → [-10, +10]
         model_bonus = (m - 50.0) * 0.20
 
+    # ── L5: explicit user feedback override ──────────────────────
+    # 👍 adds +12, 👎 subtracts 25 — strong enough to ban a transition
+    # in one click without overriding catastrophic key/BPM mismatches.
+    try:
+        from app.engine.feedback import score_modifier as _fb_mod
+        feedback_mod = _fb_mod(track_a.get("path", ""),
+                                 track_b.get("path", ""))
+    except Exception:
+        feedback_mod = 0.0
+
     score = (base + genre_bonus + rating_mod
-              + same_artist_pen + coop_bonus + model_bonus)
+              + same_artist_pen + coop_bonus + model_bonus
+              + feedback_mod)
     return round(max(0.0, min(100.0, score)), 1)
 
 
@@ -1144,7 +1181,14 @@ def transition_score_breakdown(track_a: dict, track_b: dict) -> dict:
     artist_b = _artist_from_title(track_b.get("title") or "")
     same_artist = -8.0 if artist_a and artist_a == artist_b else 0.0
 
+    try:
+        from app.engine.feedback import score_modifier as _fb_mod
+        fb = _fb_mod(track_a.get("path", ""), track_b.get("path", ""))
+    except Exception:
+        fb = 0.0
+
     return {
+        "feedback":  fb,
         "key": {
             "score": round(key, 1), "weight": weights["key"],
             "label": f"{track_a.get('camelot', '?')} → "

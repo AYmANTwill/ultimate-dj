@@ -2,6 +2,12 @@
 Download engine — YouTube, SoundCloud, Spotify via yt-dlp.
 Supports MP3 and WAV output with format priority/fallback.
 All methods are designed to run in a background thread.
+
+Performance: yt_dlp is ~6 s to import on a cold cache (it eagerly
+loads thousands of extractor modules). Importing it at module load
+made the Download page block app startup for several seconds. We
+defer the import to first use via _yt_dlp() so opening the app
+without ever clicking Download stays cheap.
 """
 from __future__ import annotations
 
@@ -11,10 +17,28 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
-from yt_dlp import YoutubeDL
-
 from app.config import get_ffmpeg, get_node
 from app.logger import log_error, log_info, log_warning
+
+
+_YDL_CACHE = None
+
+
+def _yt_dlp():
+    """Lazy import of yt_dlp.YoutubeDL — called from download workers
+    only, never at module load. Cached after first call."""
+    global _YDL_CACHE
+    if _YDL_CACHE is None:
+        from yt_dlp import YoutubeDL as _YDL
+        _YDL_CACHE = _YDL
+    return _YDL_CACHE
+
+
+# Compatibility shim — anything that used `YoutubeDL(opts)` at module
+# scope now goes through _yt_dlp() automatically.
+class YoutubeDL:
+    def __new__(cls, *args, **kwargs):
+        return _yt_dlp()(*args, **kwargs)
 
 _BASE_CACHE: dict | None = None
 
