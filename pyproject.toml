@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ultimate-dj"
+version = "1.3.0"
+description = "AI-aware DJ library manager — audio embeddings, frame-precise dual-deck preview, Rekordbox/Serato export"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Ultimate DJ contributors" },
+]
+keywords = [
+    "dj", "music", "audio-analysis", "music-information-retrieval",
+    "librosa", "rekordbox", "serato", "audio-embeddings",
+    "bpm-detection", "key-detection", "desktop-app",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
+]
+
+dependencies = [
+    "customtkinter>=5.2.0",
+    "Pillow>=10.0.0",
+    "librosa>=0.10.0",
+    "numpy>=1.24.0",
+    "soundfile>=0.12.0",
+    "sounddevice>=0.4.6",
+    "mutagen>=1.47.0",
+    "yt-dlp[default]>=2026.0.0",
+    "spotipy>=2.23.0",
+    "cloudscraper>=1.2.71",
+    "beautifulsoup4>=4.12",
+    "lxml>=4.9",
+    "pywebview>=6.0",
+    "keyring>=24.0",
+]
+
+[project.optional-dependencies]
+# High-quality time-stretch (needs rubberband.exe on PATH separately).
+stretch = ["pyrubberband>=0.3.4"]
+# State-of-the-art audio embeddings — heavy install (~2 GB torch).
+clap    = ["transformers>=4.40", "torch>=2.0"]
+# AudioSet-trained CNN embeddings.
+panns   = ["panns-inference>=0.1.1"]
+# Dev tools.
+dev     = ["ruff>=0.4", "pytest>=7"]
+
+[project.urls]
+Homepage      = "https://github.com/AYmANTwill/ultimate-dj"
+Repository    = "https://github.com/AYmANTwill/ultimate-dj"
+"Bug Tracker" = "https://github.com/AYmANTwill/ultimate-dj/issues"
+
+[project.scripts]
+ultimate-dj = "run:main"
+
+# ── Ruff (linter + formatter) ────────────────────────────────
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+src = ["app", "tests"]
+extend-exclude = ["data", "downloads", ".venv", ".pytest_cache"]
+
+[tool.ruff.lint]
+# Conservative selection — we care about correctness more than style.
+# Add E/F (pyflakes + pycodestyle errors) + W (warnings) + B (bugbear)
+# + UP (pyupgrade) + I (isort). Skip the noisy stylistic packs.
+select = ["E", "F", "W", "B", "UP", "I"]
+ignore = [
+    "E501",   # line too long — we wrap by hand, not blindly
+    "B008",   # function call in default arg — used in CTk wrappers
+    "UP038",  # isinstance(x, (A, B)) → x | y, breaks 3.10
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]    # imports after sys.path mods are intentional
+
+[tool.ruff.format]
+quote-style = "double"
+
+# ── Pytest ────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+minversion = "7"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q --tb=short"
