@@ -161,6 +161,36 @@ class DiscoverPage(ctk.CTkFrame):
             text_color=COLORS["bg_dark"],
             command=self._import_tracklist,
         ).pack(side="left", padx=4)
+        # Bulk row — paste a DJ slug (e.g. "carl_cox") and grab the
+        # last N sets in one shot. Big speed-up for building a
+        # cooccurrence corpus.
+        bulk_row = ctk.CTkFrame(tl_card, fg_color="transparent")
+        bulk_row.pack(fill="x", padx=12, pady=(0, 8))
+        ctk.CTkLabel(bulk_row, text="DJ slug :",
+                     text_color=COLORS["text_dim"],
+                     font=ctk.CTkFont(size=11)
+                     ).pack(side="left", padx=(0, 6))
+        self.dj_slug_entry = ctk.CTkEntry(
+            bulk_row, height=28, placeholder_text="ex: carl_cox",
+            fg_color=COLORS["bg_input"], border_color=COLORS["bg_input"],
+            text_color=COLORS["text"], width=160)
+        self.dj_slug_entry.pack(side="left")
+        ctk.CTkLabel(bulk_row, text="× ",
+                     text_color=COLORS["text_dim"],
+                     font=ctk.CTkFont(size=11)
+                     ).pack(side="left", padx=(8, 0))
+        self.dj_count_var = ctk.StringVar(value="20")
+        ctk.CTkEntry(
+            bulk_row, textvariable=self.dj_count_var, width=50, height=28,
+            fg_color=COLORS["bg_input"], border_color=COLORS["bg_input"],
+            text_color=COLORS["text"]).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            bulk_row, text="Scraper batch", width=130, height=28,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=COLORS["accent2"], hover_color="#e0356f",
+            text_color="white",
+            command=self._batch_scrape_dj,
+        ).pack(side="left", padx=4)
         self.tl_status = ctk.CTkLabel(
             tl_card, text="", font=ctk.CTkFont(size=10),
             text_color=COLORS["text_dim"])
@@ -208,6 +238,78 @@ class DiscoverPage(ctk.CTkFrame):
         self._update_taste_display()
 
     # ── 1001tracklists import ────────────────────────────────
+
+    def _batch_scrape_dj(self):
+        """Bulk-scrape the latest N sets from one DJ's profile.
+        Politeness sleep is enforced inside engine.tracklists; this
+        thread just iterates and reports progress to the activity tray."""
+        slug = self.dj_slug_entry.get().strip()
+        if not slug:
+            self.tl_status.configure(
+                text="Donne un DJ slug (ex: carl_cox).",
+                text_color=COLORS["warning"])
+            return
+        try:
+            n = int(self.dj_count_var.get())
+        except ValueError:
+            n = 20
+        n = max(1, min(n, 100))
+
+        self.tl_status.configure(
+            text=f"Découverte des sets de {slug}…",
+            text_color=COLORS["accent"])
+
+        def work():
+            from app.engine import tracklists, tasks
+            task = tasks.register(f"Scrape {slug}",
+                                    message="discovery…")
+            try:
+                urls = tracklists.discover_dj_sets(slug, limit=n)
+                if not urls:
+                    tasks.complete(task.id, success=False,
+                                    message=f"Aucun set trouvé pour {slug}")
+                    return
+                tasks.update(task.id, progress=0.0,
+                              message=f"0/{len(urls)} sets")
+
+                fetched = cached = failed = 0
+
+                def progress(i, total, status, info):
+                    if task.cancel_requested():
+                        raise RuntimeError("cancel_requested")
+                    nonlocal fetched, cached, failed
+                    if status == "ok":
+                        fetched += 1
+                    elif status == "cache":
+                        cached += 1
+                    else:
+                        failed += 1
+                    tasks.update(
+                        task.id, progress=i / total,
+                        message=f"{i}/{total}  ·  {info[:40]}")
+
+                try:
+                    summary = tracklists.batch_scrape(
+                        urls, on_progress=progress,
+                        stop_event=task.cancel_event)
+                except RuntimeError:
+                    summary = {"fetched": fetched, "cached": cached,
+                                "failed": failed}
+
+                tasks.complete(
+                    task.id, success=(summary["failed"] == 0),
+                    message=f"+{summary['fetched']} nouveaux, "
+                            f"{summary['cached']} en cache, "
+                            f"{summary['failed']} échecs")
+                self.after(0, lambda: self.tl_status.configure(
+                    text=f"Scrape OK : {summary}",
+                    text_color=COLORS["success"]))
+            except Exception as e:
+                tasks.complete(task.id, success=False,
+                                message=f"Erreur : {str(e)[:60]}")
+
+        threading.Thread(target=work, daemon=True,
+                          name="batch-dj-scrape").start()
 
     def _import_tracklist(self):
         url = self.tl_url_entry.get().strip()
