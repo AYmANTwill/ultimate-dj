@@ -1052,8 +1052,23 @@ def transition_score(track_a: dict, track_b: dict) -> float:
     artist_b = _artist_from_title(track_b.get("title") or "")
     same_artist_pen = -8.0 if artist_a and artist_a == artist_b else 0.0
 
+    # ── L4: trained Siamese model (opt-in) ────────────────────────
+    # If the user trained engine.transition_model.train() at least
+    # once, the saved model bumps the final score by up to ±10 raw
+    # points based on its learned outro→intro cosine. The model file
+    # may not exist (most users) — score() returns None and we skip.
+    try:
+        from app.engine.transition_model import score as _model_score
+        m = _model_score(track_a, track_b)
+    except Exception:
+        m = None
+    model_bonus = 0.0
+    if m is not None:
+        # Map model output [0, 100] → [-10, +10]
+        model_bonus = (m - 50.0) * 0.20
+
     score = (base + genre_bonus + rating_mod
-              + same_artist_pen + coop_bonus)
+              + same_artist_pen + coop_bonus + model_bonus)
     return round(max(0.0, min(100.0, score)), 1)
 
 
