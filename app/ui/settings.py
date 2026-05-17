@@ -495,6 +495,43 @@ class SettingsPage(ctk.CTkFrame):
             command=self._toggle_pipe_mode,
         ).pack(side="left")
 
+        # FMA Small (8k tracks across 8 genres) — separator + button
+        ctk.CTkFrame(pipe_card, fg_color=COLORS["bg_input"], height=1
+                      ).pack(fill="x", padx=12, pady=(2, 6))
+        ctk.CTkLabel(
+            pipe_card,
+            text=("Free Music Archive Small — 8 000 tracks (30s) "
+                  "à travers 8 genres, ~7 GB de téléchargement temporaire. "
+                  "Anchors l'espace d'embedding du L4 avec de la diversité "
+                  "que ta lib seule ne couvre pas. Audio supprimé après "
+                  "extraction si mode embeddings_only. Run ≈ 10-15 h CPU "
+                  "(interruptible, reprise depuis là où on s'est arrêté)."),
+            font=ctk.CTkFont(size=10), text_color=COLORS["text_dim"],
+            justify="left", wraplength=720
+        ).pack(anchor="w", padx=12, pady=(0, 6))
+
+        fma_row = ctk.CTkFrame(pipe_card, fg_color="transparent")
+        fma_row.pack(fill="x", padx=12, pady=(0, 10))
+        self._fma_run_btn = ctk.CTkButton(
+            fma_row, text="Télécharger + importer FMA Small",
+            width=270, height=32, font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLORS["accent2"], hover_color="#e0356f",
+            text_color=COLORS["on_accent2"],
+            command=self._run_fma_import,
+        )
+        self._fma_run_btn.pack(side="left", padx=(0, 6))
+        self._fma_limit_var = ctk.StringVar(value="100")
+        ctk.CTkLabel(fma_row, text="Max tracks (vide = tous) :",
+                     font=ctk.CTkFont(size=10),
+                     text_color=COLORS["text_dim"]
+                     ).pack(side="left", padx=(8, 4))
+        ctk.CTkEntry(
+            fma_row, width=80, height=28,
+            textvariable=self._fma_limit_var,
+            fg_color=COLORS["bg_input"], border_color=COLORS["bg_input"],
+            text_color=COLORS["text"],
+        ).pack(side="left")
+
         # ── About ────────────────────────────────────────────
         self._section(scroll, "About")
         about = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -1058,6 +1095,81 @@ class SettingsPage(ctk.CTkFrame):
 
         threading.Thread(target=work, daemon=True,
                           name="enrich-corpus").start()
+
+    def _run_fma_import(self):
+        """Download + extract FMA Small, then run analyse + embed for
+        each track with source='fma'. Heavy job (10-15 h on CPU for the
+        full 8000); interruptible via the activity tray's per-task
+        cancel button (cancels the underlying stop_event)."""
+        import threading
+        from app.engine import fma, tasks
+
+        try:
+            max_n = int(self._fma_limit_var.get()) \
+                if self._fma_limit_var.get().strip() else None
+        except ValueError:
+            max_n = 100
+
+        mode = self._pipe_mode_var.get() or "embeddings_only"
+        self._fma_run_btn.configure(
+            state="disabled", text="FMA en cours…")
+
+        def work():
+            task = tasks.register(
+                "L4 — FMA Small import",
+                message="démarrage…")
+            try:
+                # Phase 1: download zip if needed (~7 GB, resumable)
+                def _dl(done, total, msg):
+                    if total > 0:
+                        frac = 0.0 + 0.50 * (done / total)
+                    else:
+                        frac = 0.0
+                    tasks.update(task.id, progress=frac,
+                                  message=f"[dl] {msg}"[:120])
+
+                ok = fma.download_fma_small(
+                    on_progress=_dl,
+                    stop_event=task.cancel_event)
+                if not ok:
+                    tasks.complete(
+                        task.id, success=False,
+                        message="échec téléchargement FMA")
+                    return
+
+                # Phase 2: analyze + embed + (optional) purge
+                def _an(i, total, status, msg):
+                    if total > 0:
+                        frac = 0.50 + 0.50 * (i / total)
+                    else:
+                        frac = 0.50
+                    tasks.update(
+                        task.id, progress=frac,
+                        message=f"[analyse {i}/{total}] {msg}"[:120])
+
+                summary = fma.import_into_db(
+                    mode=mode, max_tracks=max_n,
+                    on_progress=_an,
+                    stop_event=task.cancel_event)
+                tasks.complete(
+                    task.id, success=True,
+                    message=(f"OK · {summary['analyzed']} analysés "
+                             f"({summary['skipped']} déjà en DB, "
+                             f"{summary['failed']} échecs)"))
+                self.after(0, self._refresh_pipe_status)
+                self.after(0, self._refresh_model_status)
+            except Exception as e:
+                tasks.complete(task.id, success=False,
+                                message=f"Erreur : {str(e)[:60]}")
+                from app.logger import log_error
+                log_error("fma import failed", e)
+            finally:
+                self.after(0, lambda: self._fma_run_btn.configure(
+                    state="normal",
+                    text="Télécharger + importer FMA Small"))
+
+        threading.Thread(target=work, daemon=True,
+                          name="fma-import").start()
 
     def _refresh_cooc_status(self):
         """Re-read scraped-set + pair counts. Threaded — pair_count is

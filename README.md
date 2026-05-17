@@ -241,6 +241,7 @@ shows the contribution from each.
 - AI Level 3 — RMS-envelope intro/outro segmentation
 - AI Level 4 — Siamese transition model end-to-end: trainable, `score()` wired into the scoreur AND shown in the Mixer breakdown popup, one-click training in **Settings → AI · Modèle de transition** with per-epoch progress in the activity tray, day-1 cold-start handled by `bootstrap_pairs()` distillation of the heuristic scorer (so the model is useful from the very first train, even without any scraped tracklists)
 - L4 training pipeline (`engine/training_pipeline.py`) — multi-stage corpus enricher: scan top artists in your lib → discover their sets on 1001tracklists → batch scrape (with Cloudflare circuit breaker) → download missing tracks via yt-dlp into `data/training_corpus/` → analyse + embed → optionally purge MP3 (embeddings-only mode keeps DB at ~50 MB for 5 k corpus tracks) → cooccurrence rebuild → L4 retrain. One-click in **Settings → AI · Pipeline d'entraînement**.
+- FMA Small (`engine/fma.py`) — Free Music Archive integration: downloads + extracts 8 000 cross-genre 30s clips (~7 GB, resumable), analyses each into the DB with `source='fma'` (hidden from UI), purges MP3 in embeddings-only mode. Anchors the L4 embedding space with diversity the user library alone can't provide.
 - AI Level 5 — 👍/👎 feedback loop fully closed: Mixer buttons → instant score modifier (+12 / –25) → oversampled into L4's training set → optional auto-retrain in the background when ≥ 10 new votes accumulate since the last train (toggle in Settings)
 - Discover page — 1-click batch scrape from a DJ slug
 - Activity tray — every background job visible top-left (lazy-built on first task)
@@ -253,12 +254,12 @@ shows the contribution from each.
   + auto-scan librosa import moved to worker thread (no UI freeze)
 
 ### Next up
-- L4 corpus enrichment — FMA Small (8k tracks) integration as feature
-  pool, complementing the user's library + 1001tracklists pairs
 - 20+ engine-level tests (currently 12)
 - `pip-compile` lockfile + `ruff` + pre-commit
 - L4 model evaluation harness — back-test the trained model against
   held-out 1001tracklists pairs and report accuracy / AUC
+- Continuous-learning auto-trigger — fire `enrich_corpus()` in the
+  background whenever the user adds ≥ N new tracks to their library
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
 
