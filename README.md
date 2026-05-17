@@ -198,15 +198,16 @@ ultimate-dj/
 
 ## 🤖 The AI layer (roadmap)
 
-The transition-scoring AI is being built in five levels. **Level 1
-is live**; Levels 2-5 are in flight.
+The transition-scoring AI is being built in five levels. **Levels 1–3
+are live and wired into the production transition score.** L4 has a
+trainable skeleton in the tree; L5 is still on paper.
 
 | Level | What | Status |
 |---|---|---|
 | **L1** Pretrained audio embeddings (CLAP / PANNs / lite) | 256-d vector per track captures sonic identity. Cosine similarity feeds into `transition_score`. | ✅ shipped |
-| **L2** Co-occurrence from 1001tracklists | Word2vec-style embeddings learned from real DJ sets. Tracks often mixed by pros end up near each other in the latent space. | 🟡 scraper Phase 1 done; batch + training pending |
-| **L3** Structure segmentation | Auto-detect intro/build/drop/break/outro. The Mixer can then score outro-of-A vs intro-of-B instead of comparing whole tracks. | ⚪ design |
-| **L4** Custom Siamese transition model | Train on (outro features, intro features) pairs labelled by 1001tracklists ordering. Negative pairs are random tracks not from the same set. | ⚪ design |
+| **L2** Co-occurrence from 1001tracklists | Position-decay weights mined from cached tracklists (`engine/cooccurrence.py`); plugged into `transition_score` as a 5th axis — tracks that pro DJs actually mix together get a bonus over tracks that just share a key. | ✅ shipped |
+| **L3** Structure segmentation | RMS-envelope heuristic (`engine/segmentation.py`) auto-detects `intro_end` / `outro_start` / drops on every `analyze_track`. Mixer scores outro-of-A vs intro-of-B instead of comparing whole tracks. | ✅ shipped |
+| **L4** Custom Siamese transition model | Trainable Siamese net (`engine/transition_model.py`) — shared encoder, contrastive loss on (outro_A, intro_B) pairs from 1001tracklists ordering, ~200 k params, CPU-trainable. Inference is a no-op until a `transition.pt` exists. | 🟡 skeleton + dataset extractor + train/score path shipped; first-train + wire-into-scorer pending |
 | **L5** Active learning | User feedback (👍 / 👎 on suggested transitions) fine-tunes the model on personal taste. | ⚪ design |
 
 ---
@@ -233,21 +234,26 @@ is live**; Levels 2-5 are in flight.
 
 ## 🛣 Roadmap
 
-### Done in v1.3
-- AI audio embeddings (L1)
-- Production-grade safety net (snapshots + trash + undo)
-- Spotify creds → Windows Credential Manager
-- WAV/FLAC/M4A repair tool
-- Frame-precise sounddevice playback
-- Hot-cue keyboard shortcuts
-- Resizable panels
+### Done in v1.3 → v1.4
+- AI Level 1 — pretrained audio embeddings
+- AI Level 2 — 1001tracklists co-occurrence wired into the transition score
+- AI Level 3 — RMS-envelope intro/outro segmentation
+- AI Level 4 (skeleton) — Siamese transition model, opt-in, torch-gated
+- Discover page — 1-click batch scrape from a DJ slug
+- Activity tray — every background job visible top-left (lazy-built on first task)
+- `pyproject.toml` + 12 engine unit tests
+- PyInstaller spec + one-shot build script → standalone `.exe`
+- Per-monitor DPI awareness — embedded Spotify / YouTube / SoundCloud
+  / 1001Tracklists windows now report the correct viewport (fixes
+  Spotify's `position: fixed` playback bar disappearing)
+- Boot time slashed by deferring heavy module imports + lazy ActivityTray
+  + auto-scan librosa import moved to worker thread (no UI freeze)
 
 ### Next up
-- AI Level 2 — co-occurrence learning from 1001tracklists batch scrape
-- AI Level 3 — structure segmentation (intro/outro detection)
-- `pyproject.toml` + `pip-compile` lockfile + `ruff` + pre-commit
-- 20+ engine-level tests
-- PyInstaller spec → standalone `.exe` distribution
+- AI Level 4 — train + wire `transition_model.score()` into the scorer
+- AI Level 5 — active learning loop (👍 / 👎 feedback fine-tunes the model)
+- 20+ engine-level tests (currently 12)
+- `pip-compile` lockfile + `ruff` + pre-commit
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
 

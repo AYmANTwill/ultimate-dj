@@ -309,7 +309,15 @@ class BrowserPanel(ctk.CTkFrame):
         if hwnd:
             _reparent(hwnd, host_hwnd)
             self._embedded_hwnd = hwnd
+            # Initial fit, then a small burst of re-fits so we catch any
+            # layout that wasn't settled at reparent time. Without these,
+            # if the host frame's <Configure> doesn't fire after the first
+            # fit (common on the very first page switch), the embed stays
+            # stuck at whatever the host's transitional size was — which
+            # is what hid the Spotify playback bar.
             self._fit_now()
+            for delay in (50, 200, 600, 1500):
+                self.after(delay, self._fit_now)
             return
 
         if attempt >= 60:  # 60 * 250ms = 15s
@@ -320,7 +328,17 @@ class BrowserPanel(ctk.CTkFrame):
     def _fit_now(self):
         if not self._embedded_hwnd:
             return
-        # Query the parent HWND directly (handles high-DPI correctly).
+        # Force pending geometry to settle before reading the host size.
+        # Without this the very first fit can read a partially-built
+        # layout — particularly on the initial page switch.
+        try:
+            self.embed_host.update_idletasks()
+        except Exception:
+            pass
+        # Query the parent HWND directly (now that the process is DPI-aware
+        # via app/__init__.py, GetClientRect matches the WebView2 child's
+        # coordinate system exactly — Spotify's `position: fixed; bottom: 0`
+        # playback bar lands at the bottom of the visible viewport).
         # Fall back to Tk dims only if Win32 returns zero.
         host_hwnd = self.embed_host.winfo_id()
         w, h = _client_rect(host_hwnd)
