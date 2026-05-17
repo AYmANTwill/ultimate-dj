@@ -112,6 +112,14 @@ class MixerPage(ctk.CTkFrame):
             text_color=COLORS["text_dim"], font=font(12))
         self.selected_label.pack(anchor="w", padx=12, pady=(0, 6))
 
+        # Create the transitions table — but DON'T pack it yet. The
+        # bottom-anchored widgets (feedback row + hint) need to claim
+        # their pixel budget first; only then we pack the table with
+        # expand=True so it auto-shrinks to whatever space remains
+        # above them. This is the canonical Tk "header / content /
+        # footer" pattern — without it, expand=True swallowed the
+        # space that the feedback buttons should have lived in and
+        # they were rendered below the visible area.
         self.tx_table = FastList(
             right,
             [("score", "Score", 60),
@@ -122,30 +130,16 @@ class MixerPage(ctk.CTkFrame):
             on_double_click=lambda row: self._show_breakdown(row),
             height=12,
         )
-        self.tx_table.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        # Hint label so the user discovers double-click
-        ctk.CTkLabel(
-            right,
-            text="Double-clic sur une transition pour voir le détail "
-                 "du score (key / BPM / audio / co-occurrence…)",
-            font=font(10), text_color=COLORS["text_dim"]
-        ).pack(anchor="w", padx=12, pady=(0, 6))
 
-        # ── L5: feedback buttons (active learning) ───────────────
-        # Acts on the transition currently loaded on Deck B (via _load_b).
+        # ── L5: feedback row (pinned to the bottom of `right`) ───
         # 👍 adds +12 to that pair's score forever, 👎 subtracts 25
         # (effectively banning it), × clears the vote. Persisted in
         # transition_feedback table + data/feedback.jsonl audit log via
-        # engine.feedback. The scorer reads this on every call so the
+        # engine.feedback. Scorer reads this on every call so the
         # transitions list re-orders immediately after a vote.
-        # Pack order: buttons first on the RIGHT (so they always claim
-        # their pixel budget), then status fills the remaining left
-        # space. The previous "label expand=True + buttons left" order
-        # let the label eat the buttons' room on narrow layouts and the
-        # buttons disappeared.
         fb_row = ctk.CTkFrame(right, fg_color=COLORS["bg_input"],
                                 corner_radius=8, height=38)
-        fb_row.pack(fill="x", padx=12, pady=(2, 8))
+        fb_row.pack(side="bottom", fill="x", padx=12, pady=(2, 8))
         fb_row.pack_propagate(False)   # honour our explicit height
         self._fb_clear_btn = ctk.CTkButton(
             fb_row, text="×", width=30, height=28,
@@ -177,6 +171,19 @@ class MixerPage(ctk.CTkFrame):
             anchor="w")
         self._fb_status.pack(side="left", fill="x", expand=True,
                               padx=(8, 0), pady=4)
+
+        # Hint label — pinned just above the feedback row
+        ctk.CTkLabel(
+            right,
+            text="Double-clic sur une transition pour voir le détail "
+                 "du score (key / BPM / audio / co-occurrence…)",
+            font=font(10), text_color=COLORS["text_dim"]
+        ).pack(side="bottom", anchor="w", padx=12, pady=(0, 4))
+
+        # NOW pack the table — fills whatever vertical space is left
+        # above the hint + feedback row. Auto-resizes when the user
+        # drags the PanedWindow sash.
+        self.tx_table.pack(fill="both", expand=True, padx=8, pady=(0, 4))
 
         # ── Dual-deck preview (bottom pane of the vertical sash) ─
         # Wrapping the explanatory header + the decks_row in a single
