@@ -242,7 +242,8 @@ class DiscoverPage(ctk.CTkFrame):
     def _batch_scrape_dj(self):
         """Bulk-scrape the latest N sets from one DJ's profile.
         Politeness sleep is enforced inside engine.tracklists; this
-        thread just iterates and reports progress to the activity tray."""
+        thread iterates and reports progress to BOTH the inline
+        progress bar (top of page) AND the activity tray."""
         slug = self.dj_slug_entry.get().strip()
         if not slug:
             self.tl_status.configure(
@@ -255,20 +256,51 @@ class DiscoverPage(ctk.CTkFrame):
             n = 20
         n = max(1, min(n, 100))
 
+        # Immediate visible feedback
         self.tl_status.configure(
-            text=f"Découverte des sets de {slug}…",
+            text=f"Découverte des sets de {slug}… "
+                 f"(chargement playwright, peut prendre 30s)",
             text_color=COLORS["accent"])
+        self.progress.set(0)
+
+        def _ui(msg: str, color: str = "accent", frac: float | None = None):
+            """Thread-safe UI update — schedule on main loop."""
+            def _apply():
+                try:
+                    self.tl_status.configure(
+                        text=msg, text_color=COLORS[color])
+                    if frac is not None:
+                        self.progress.set(max(0.0, min(1.0, frac)))
+                except Exception:
+                    pass
+            try:
+                self.after(0, _apply)
+            except Exception:
+                pass
 
         def work():
             from app.engine import tracklists, tasks
             task = tasks.register(f"Scrape {slug}",
                                     message="discovery…")
             try:
-                urls = tracklists.discover_dj_sets(slug, limit=n)
+                try:
+                    urls = tracklists.discover_dj_sets(slug, limit=n)
+                except tracklists.IPLimitedError as e:
+                    _ui(f"1001tracklists a bloqué cette IP — "
+                        f"réessaie dans quelques heures ou via VPN",
+                        color="error", frac=0)
+                    tasks.complete(task.id, success=False,
+                                    message=str(e)[:80])
+                    return
                 if not urls:
+                    _ui(f"Aucun set trouvé pour {slug} — "
+                        f"vérifie le slug sur 1001tracklists.com/dj/",
+                        color="warning", frac=0)
                     tasks.complete(task.id, success=False,
                                     message=f"Aucun set trouvé pour {slug}")
                     return
+                _ui(f"0/{len(urls)} sets scrapés…", color="accent",
+                    frac=0.0)
                 tasks.update(task.id, progress=0.0,
                               message=f"0/{len(urls)} sets")
 
@@ -284,9 +316,11 @@ class DiscoverPage(ctk.CTkFrame):
                         cached += 1
                     else:
                         failed += 1
-                    tasks.update(
-                        task.id, progress=i / total,
-                        message=f"{i}/{total}  ·  {info[:40]}")
+                    frac = i / total
+                    msg = (f"[{status}] {i}/{total}  ·  "
+                            f"{info[:40]}")
+                    tasks.update(task.id, progress=frac, message=msg)
+                    _ui(msg, color="accent", frac=frac)
 
                 try:
                     summary = tracklists.batch_scrape(
@@ -301,12 +335,14 @@ class DiscoverPage(ctk.CTkFrame):
                     message=f"+{summary['fetched']} nouveaux, "
                             f"{summary['cached']} en cache, "
                             f"{summary['failed']} échecs")
-                self.after(0, lambda: self.tl_status.configure(
-                    text=f"Scrape OK : {summary}",
-                    text_color=COLORS["success"]))
+                _ui(f"Scrape OK : +{summary.get('fetched',0)} nouveaux, "
+                    f"{summary.get('cached',0)} en cache, "
+                    f"{summary.get('failed',0)} échecs",
+                    color="success", frac=1.0)
             except Exception as e:
                 tasks.complete(task.id, success=False,
                                 message=f"Erreur : {str(e)[:60]}")
+                _ui(f"Erreur : {str(e)[:80]}", color="error", frac=0)
 
         threading.Thread(target=work, daemon=True,
                           name="batch-dj-scrape").start()

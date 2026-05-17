@@ -331,6 +331,11 @@ class SettingsPage(ctk.CTkFrame):
         )
         self._struct_btn.pack(side="left", padx=(0, 6))
 
+        # Inline progress UI for segmentation
+        (self._struct_prog_frame,
+         self._struct_prog_bar,
+         self._struct_prog_step) = self._make_progress_row(struct_card)
+
         # ── AI · Co-occurrence (1001tracklists) ───────────────
         # Mines real DJ sets to find which local tracks pros mix
         # together. Adds up to +15 raw points to the transition score
@@ -368,6 +373,11 @@ class SettingsPage(ctk.CTkFrame):
             command=self._run_cooccurrence,
         )
         self._cooc_btn.pack(side="left", padx=(0, 6))
+
+        # Inline progress UI for cooccurrence rebuild
+        (self._cooc_prog_frame,
+         self._cooc_prog_bar,
+         self._cooc_prog_step) = self._make_progress_row(cooc_card)
 
         # ── AI · Modèle de transition (L4 Siamese) ────────────
         # Trains a tiny Siamese network on (outro, intro) pairs from
@@ -417,6 +427,11 @@ class SettingsPage(ctk.CTkFrame):
             command=self._reset_model,
         )
         self._model_reset_btn.pack(side="left", padx=(0, 6))
+
+        # Inline progress UI for training (epochs progression)
+        (self._model_prog_frame,
+         self._model_prog_bar,
+         self._model_prog_step) = self._make_progress_row(model_card)
 
         # Auto-retrain toggle — fires a background retrain every time
         # the user has accumulated transition_model.AUTO_RETRAIN_THRESHOLD
@@ -477,6 +492,14 @@ class SettingsPage(ctk.CTkFrame):
         )
         self._pipe_run_btn.pack(side="left", padx=(0, 12))
 
+        # Inline progress UI (hidden by default, shown when worker is
+        # active). Not relying on the floating activity tray alone —
+        # this row is visible right under the button, so the user
+        # always sees what's happening even if the tray is off-screen.
+        (self._pipe_prog_frame,
+         self._pipe_prog_bar,
+         self._pipe_prog_step) = self._make_progress_row(pipe_card)
+
         # Mode toggle — persists in config.json as ai_corpus_mode
         from app.config import load_config as _load_cfg2
         _cfg2 = _load_cfg2()
@@ -534,6 +557,11 @@ class SettingsPage(ctk.CTkFrame):
             text_color=COLORS["text"],
         ).pack(side="left")
 
+        # Inline progress UI for FMA (download + analyze phases)
+        (self._fma_prog_frame,
+         self._fma_prog_bar,
+         self._fma_prog_step) = self._make_progress_row(pipe_card)
+
         # ── About ────────────────────────────────────────────
         self._section(scroll, "About")
         about = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -575,8 +603,12 @@ class SettingsPage(ctk.CTkFrame):
         self._cooc_btn.configure(state="disabled",
                                    text="En cours…")
         self._cooc_status.configure(
-            text="démarrage rebuild… (voir activity tray top-left)",
+            text="démarrage rebuild…",
             text_color=COLORS["accent"])
+        self._show_progress(
+            self._cooc_prog_frame, self._cooc_prog_bar,
+            self._cooc_prog_step, 0.0,
+            "démarrage… (lecture des tracklists cachées)")
 
         def work():
             task = tasks.register("Cooccurrence — rebuild",
@@ -585,9 +617,12 @@ class SettingsPage(ctk.CTkFrame):
                 conn = get_connection()
 
                 def progress(i, total, slug):
-                    tasks.update(task.id,
-                                  progress=i / max(1, total),
-                                  message=f"{i}/{total}  ·  {slug[:40]}")
+                    frac = i / max(1, total)
+                    msg = f"{i}/{total}  ·  {slug[:40]}"
+                    tasks.update(task.id, progress=frac, message=msg)
+                    self._show_progress(
+                        self._cooc_prog_frame, self._cooc_prog_bar,
+                        self._cooc_prog_step, frac, msg)
 
                 summary = cooccurrence.rebuild(conn, on_progress=progress)
                 cooccurrence.invalidate_cache()
@@ -596,6 +631,7 @@ class SettingsPage(ctk.CTkFrame):
                                 message=f"Erreur : {str(e)[:60]}")
                 self.after(0, lambda: self._cooc_btn.configure(
                     state="normal", text="Reconstruire la matrice"))
+                self._hide_progress(self._cooc_prog_frame)
                 return
 
             self.after(0, lambda s=summary: self._cooc_status.configure(
@@ -609,6 +645,7 @@ class SettingsPage(ctk.CTkFrame):
                         f"{summary['matched_tracks']} tracks reconnues")
             self.after(0, lambda: self._cooc_btn.configure(
                 state="normal", text="Reconstruire la matrice"))
+            self._hide_progress(self._cooc_prog_frame)
 
         threading.Thread(target=work, daemon=True,
                           name="cooccurrence-rebuild").start()
@@ -759,8 +796,12 @@ class SettingsPage(ctk.CTkFrame):
         self._struct_btn.configure(state="disabled",
                                      text="En cours…")
         self._struct_status.configure(
-            text="démarrage segmentation… (voir activity tray top-left)",
+            text="démarrage segmentation…",
             text_color=COLORS["accent"])
+        self._show_progress(
+            self._struct_prog_frame, self._struct_prog_bar,
+            self._struct_prog_step, 0.0,
+            "démarrage… (chargement librosa)")
 
         def work():
             task = tasks.register("Segmentation intro/outro",
@@ -799,10 +840,17 @@ class SettingsPage(ctk.CTkFrame):
                         elapsed = time.time() - t0
                         rate = i / elapsed if elapsed > 0 else 0
                         eta_s = (n - i) / rate if rate > 0 else 0
+                        msg = (f"{i}/{n}  ·  "
+                                f"{Path(t['path']).name[:32]}")
                         tasks.update(
                             task.id, progress=i / n, eta_s=eta_s,
-                            message=f"{i}/{n}  ·  "
-                                    f"{Path(t['path']).name[:32]}")
+                            message=msg)
+                        self._show_progress(
+                            self._struct_prog_frame,
+                            self._struct_prog_bar,
+                            self._struct_prog_step,
+                            i / n,
+                            f"{msg}  ·  ETA {eta_s/60:.0f}min")
                 tasks.complete(
                     task.id, success=(errs == 0),
                     message=f"{done} OK, {errs} erreurs")
@@ -814,6 +862,7 @@ class SettingsPage(ctk.CTkFrame):
                 # Restore the button regardless of success / cancellation
                 self.after(0, lambda: self._struct_btn.configure(
                     state="normal", text="Segmenter les nouveaux"))
+                self._hide_progress(self._struct_prog_frame)
 
         threading.Thread(target=work, daemon=True,
                           name="bulk-segment").start()
@@ -905,6 +954,10 @@ class SettingsPage(ctk.CTkFrame):
         # Lock out double-clicks while training is in progress
         self._model_train_btn.configure(state="disabled",
                                          text="Entraînement…")
+        self._show_progress(
+            self._model_prog_frame, self._model_prog_bar,
+            self._model_prog_step, 0.0,
+            "démarrage… (extraction des paires)")
 
         def work():
             task = tasks.register(
@@ -922,6 +975,10 @@ class SettingsPage(ctk.CTkFrame):
                     tasks.update(task.id, progress=0.02,
                                   message="bootstrap (distillation "
                                           "heuristique)…")
+                    self._show_progress(
+                        self._model_prog_frame, self._model_prog_bar,
+                        self._model_prog_step, 0.02,
+                        "bootstrap (distillation heuristique)…")
                     pairs = transition_model.bootstrap_pairs(conn)
                     source = "bootstrap (distillation)"
                 if not pairs:
@@ -934,14 +991,20 @@ class SettingsPage(ctk.CTkFrame):
                 tasks.update(task.id, progress=0.05,
                               message=f"{len(pairs)} exemples "
                                       f"({source}) → train")
+                self._show_progress(
+                    self._model_prog_frame, self._model_prog_bar,
+                    self._model_prog_step, 0.05,
+                    f"{len(pairs)} exemples ({source}) → train")
                 n_pairs_total = len(pairs)
 
                 def _on_epoch(frac: float, msg: str):
                     # Reserve 5% for prep, 5% for the final save —
                     # epochs span the middle 90% of the progress bar
-                    tasks.update(task.id,
-                                  progress=0.05 + frac * 0.90,
-                                  message=msg)
+                    progress = 0.05 + frac * 0.90
+                    tasks.update(task.id, progress=progress, message=msg)
+                    self._show_progress(
+                        self._model_prog_frame, self._model_prog_bar,
+                        self._model_prog_step, progress, msg)
 
                 ok = transition_model.train(pairs, on_progress=_on_epoch)
                 if not ok:
@@ -962,6 +1025,7 @@ class SettingsPage(ctk.CTkFrame):
             finally:
                 self.after(0, lambda: self._model_train_btn.configure(
                     state="normal", text="Entraîner le modèle"))
+                self._hide_progress(self._model_prog_frame)
 
         threading.Thread(target=work, daemon=True,
                           name="l4-train").start()
@@ -1012,6 +1076,60 @@ class SettingsPage(ctk.CTkFrame):
             from app.logger import log_error
             log_error("L4 reset failed", e)
 
+    # ── Inline progress widgets (shared helper) ──────────────────
+
+    def _make_progress_row(self, parent):
+        """Build a (frame, progress_bar, step_label) widget group for
+        inline progress reporting under any long-running button.
+
+        Returns the three widgets; the frame is NOT packed yet — call
+        ``_show_progress(frame, ...)`` to make it visible when a worker
+        starts, ``_hide_progress(frame)`` when it finishes.
+        """
+        f = ctk.CTkFrame(parent, fg_color="transparent")
+        bar = ctk.CTkProgressBar(
+            f, height=8,
+            fg_color=COLORS["bg_input"],
+            progress_color=COLORS["accent"])
+        bar.set(0)
+        bar.pack(fill="x", padx=12, pady=(0, 4))
+        step = ctk.CTkLabel(
+            f, text="", font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_dim"], anchor="w",
+            justify="left", wraplength=720)
+        step.pack(anchor="w", padx=12, pady=(0, 6))
+        return f, bar, step
+
+    def _show_progress(self, frame, bar, step, fraction: float, msg: str):
+        """Thread-safe UI update — schedule on main loop. Pops the
+        progress row in if hidden, updates bar + step label."""
+        def _apply():
+            try:
+                if not frame.winfo_ismapped():
+                    frame.pack(fill="x", pady=(0, 6))
+                if fraction is not None:
+                    bar.set(max(0.0, min(1.0, fraction)))
+                if msg:
+                    step.configure(text=msg)
+            except Exception:
+                pass
+        try:
+            self.after(0, _apply)
+        except Exception:
+            pass
+
+    def _hide_progress(self, frame):
+        """Hide the inline progress row once the worker finishes."""
+        def _apply():
+            try:
+                frame.pack_forget()
+            except Exception:
+                pass
+        try:
+            self.after(0, _apply)
+        except Exception:
+            pass
+
     def _refresh_pipe_status(self):
         """Show corpus composition (user vs training/fma) + pair count."""
         import threading
@@ -1051,12 +1169,20 @@ class SettingsPage(ctk.CTkFrame):
 
     def _run_enrich_corpus(self):
         """Fire the L4 training pipeline in a background thread,
-        progress mirrored to the activity tray."""
+        progress mirrored to BOTH the inline progress row AND the
+        activity tray (so even if the tray is off-screen the user
+        always sees what's happening)."""
         import threading
         from app.engine import training_pipeline, tasks
 
         self._pipe_run_btn.configure(state="disabled",
                                        text="En cours…")
+        # Pop the inline progress row immediately so the user knows the
+        # click was registered, before the worker has even spawned.
+        self._show_progress(
+            self._pipe_prog_frame, self._pipe_prog_bar,
+            self._pipe_prog_step, 0.0,
+            "démarrage… (chargement playwright + sondage 1001tracklists)")
         mode = self._pipe_mode_var.get() or "embeddings_only"
 
         def work():
@@ -1086,6 +1212,12 @@ class SettingsPage(ctk.CTkFrame):
                         task.id,
                         progress=frac,
                         message=f"[{phase}] {msg}"[:120])
+                    # Mirror to the inline row — even if the tray
+                    # subscription doesn't fire, this WILL update.
+                    self._show_progress(
+                        self._pipe_prog_frame, self._pipe_prog_bar,
+                        self._pipe_prog_step, frac,
+                        f"[{phase} {i}/{total}] {msg}"[:160])
 
                 summary = training_pipeline.enrich_corpus(
                     target_pairs=2000,
@@ -1135,6 +1267,7 @@ class SettingsPage(ctk.CTkFrame):
             finally:
                 self.after(0, lambda: self._pipe_run_btn.configure(
                     state="normal", text="Enrichir le corpus"))
+                self._hide_progress(self._pipe_prog_frame)
 
         threading.Thread(target=work, daemon=True,
                           name="enrich-corpus").start()
@@ -1156,6 +1289,10 @@ class SettingsPage(ctk.CTkFrame):
         mode = self._pipe_mode_var.get() or "embeddings_only"
         self._fma_run_btn.configure(
             state="disabled", text="FMA en cours…")
+        self._show_progress(
+            self._fma_prog_frame, self._fma_prog_bar,
+            self._fma_prog_step, 0.0,
+            "démarrage… (vérification téléchargement FMA Small)")
 
         def work():
             task = tasks.register(
@@ -1170,6 +1307,10 @@ class SettingsPage(ctk.CTkFrame):
                         frac = 0.0
                     tasks.update(task.id, progress=frac,
                                   message=f"[dl] {msg}"[:120])
+                    self._show_progress(
+                        self._fma_prog_frame, self._fma_prog_bar,
+                        self._fma_prog_step, frac,
+                        f"[download] {msg}"[:160])
 
                 ok = fma.download_fma_small(
                     on_progress=_dl,
@@ -1189,6 +1330,10 @@ class SettingsPage(ctk.CTkFrame):
                     tasks.update(
                         task.id, progress=frac,
                         message=f"[analyse {i}/{total}] {msg}"[:120])
+                    self._show_progress(
+                        self._fma_prog_frame, self._fma_prog_bar,
+                        self._fma_prog_step, frac,
+                        f"[analyse {i}/{total}] {msg}"[:160])
 
                 summary = fma.import_into_db(
                     mode=mode, max_tracks=max_n,
@@ -1210,6 +1355,7 @@ class SettingsPage(ctk.CTkFrame):
                 self.after(0, lambda: self._fma_run_btn.configure(
                     state="normal",
                     text="Télécharger + importer FMA Small"))
+                self._hide_progress(self._fma_prog_frame)
 
         threading.Thread(target=work, daemon=True,
                           name="fma-import").start()
