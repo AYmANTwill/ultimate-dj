@@ -147,6 +147,25 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             ("intro_end",      "REAL"),
             ("outro_start",    "REAL"),
             ("drops",          "TEXT"),    # JSON list of seconds
+            # Training-corpus support (engine.training_pipeline).
+            # source = 'user'    → tracks the user actually added to their
+            #                      library (default — what shows up in
+            #                      the Library / Mixer / Setlist pages).
+            # source = 'training'→ tracks downloaded via yt-dlp purely to
+            #                      enrich the L4 training corpus (matched
+            #                      from scraped 1001tracklists sets). Hidden
+            #                      from the user-facing pages.
+            # source = 'fma'     → tracks from the Free Music Archive
+            #                      Small dataset. Same hiding rule as
+            #                      'training'.
+            ("source",         "TEXT DEFAULT 'user'"),
+            # 1 = the original MP3/WAV has been deleted after we extracted
+            # the embedding + structure features (embeddings-only mode for
+            # training tracks — saves disk space). The DB still has the
+            # 256-d embedding, BPM, key, etc. — the model can still train
+            # / score on this row, but Library/Mixer would refuse to load
+            # the file. Always 0 for source='user' tracks.
+            ("audio_purged",   "INTEGER DEFAULT 0"),
         ]:
             if col not in existing_cols:
                 try:
@@ -302,15 +321,19 @@ def upsert_track(conn: sqlite3.Connection, info: dict):
     payload.setdefault("outro_start", None)
     # Don't blast user-set fields — leave them NULL on insert, let the
     # UPDATE clause skip them via COALESCE
+    # source flag — defaults to 'user' so the existing user-track flow
+    # is unchanged. engine.training_pipeline passes 'training' / 'fma'
+    # when filling the corpus.
+    payload.setdefault("source", "user")
     conn.execute("""
         INSERT INTO tracks
             (path, title, bpm, key, camelot, energy, duration,
              key_confidence, added_at, beat_grid,
-             intro_end, outro_start, drops)
+             intro_end, outro_start, drops, source)
         VALUES
             (:path, :title, :bpm, :key, :camelot, :energy, :duration,
              :key_confidence, :added_at, :beat_grid,
-             :intro_end, :outro_start, :drops)
+             :intro_end, :outro_start, :drops, :source)
         ON CONFLICT(path) DO UPDATE SET
             title          = :title,
             bpm            = CASE WHEN tracks.bpm_locked = 1
@@ -323,7 +346,8 @@ def upsert_track(conn: sqlite3.Connection, info: dict):
             beat_grid      = COALESCE(:beat_grid, tracks.beat_grid),
             intro_end      = COALESCE(:intro_end, tracks.intro_end),
             outro_start    = COALESCE(:outro_start, tracks.outro_start),
-            drops          = COALESCE(:drops, tracks.drops)
+            drops          = COALESCE(:drops, tracks.drops),
+            source         = COALESCE(:source, tracks.source)
     """, payload)
     conn.commit()
 
@@ -727,15 +751,29 @@ def purge_old_trash(conn: sqlite3.Connection,
     return len(paths)
 
 
-def all_tracks(conn: sqlite3.Connection) -> list[dict]:
+def all_tracks(conn: sqlite3.Connection,
+                *, include_training: bool = False) -> list[dict]:
     """All non-trashed tracks. Trashed tracks are surfaced by
     `list_trash()` instead — Library's normal views skip them so the
-    user can Undo a bulk delete within 30 days."""
-    rows = conn.execute(
-        "SELECT * FROM tracks "
-        "WHERE path NOT IN (SELECT path FROM trash) "
-        "ORDER BY title COLLATE NOCASE"
-    ).fetchall()
+    user can Undo a bulk delete within 30 days.
+
+    ``include_training`` defaults to False so user-facing pages (Library,
+    Mixer, Setlist) never see corpus-only rows (source != 'user'). The
+    L4 training pipeline passes True to see everything.
+    """
+    if include_training:
+        rows = conn.execute(
+            "SELECT * FROM tracks "
+            "WHERE path NOT IN (SELECT path FROM trash) "
+            "ORDER BY title COLLATE NOCASE"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM tracks "
+            "WHERE path NOT IN (SELECT path FROM trash) "
+            "AND COALESCE(source, 'user') = 'user' "
+            "ORDER BY title COLLATE NOCASE"
+        ).fetchall()
     return [dict(r) for r in rows]
 
 

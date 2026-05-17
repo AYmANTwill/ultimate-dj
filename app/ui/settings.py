@@ -437,6 +437,64 @@ class SettingsPage(ctk.CTkFrame):
             command=self._toggle_auto_retrain,
         ).pack(anchor="w", padx=12, pady=(0, 10))
 
+        # ── AI · Pipeline d'entraînement ──────────────────────
+        # End-to-end corpus enrichment: scrapes top artists from your
+        # lib, downloads missing tracks via yt-dlp (or keeps audio off
+        # via embeddings-only mode), rebuilds cooccurrence, retrains L4.
+        self._section(scroll, "AI · Pipeline d'entraînement")
+        pipe_card = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"],
+                                   corner_radius=8)
+        pipe_card.pack(fill="x", pady=3)
+
+        self._pipe_status = ctk.CTkLabel(
+            pipe_card, text="Chargement…",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_dim"])
+        self._pipe_status.pack(anchor="w", padx=12, pady=(10, 4))
+        self.after_idle(self._refresh_pipe_status)
+
+        ctk.CTkLabel(
+            pipe_card,
+            text=("Enrichit automatiquement le corpus L4 en scrapant "
+                  "les sets des artistes les plus présents dans ta lib "
+                  "(1001tracklists), téléchargeant les tracks manquantes "
+                  "via yt-dlp, calculant leurs embeddings puis "
+                  "supprimant les MP3 si mode 'embeddings only'. "
+                  "Suivi en temps réel dans l'activity tray."),
+            font=ctk.CTkFont(size=10), text_color=COLORS["text_dim"],
+            justify="left", wraplength=720
+        ).pack(anchor="w", padx=12, pady=(0, 6))
+
+        pipe_row = ctk.CTkFrame(pipe_card, fg_color="transparent")
+        pipe_row.pack(fill="x", padx=12, pady=(0, 10))
+        self._pipe_run_btn = ctk.CTkButton(
+            pipe_row, text="Enrichir le corpus",
+            width=200, height=32, font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["bg_dark"],
+            command=self._run_enrich_corpus,
+        )
+        self._pipe_run_btn.pack(side="left", padx=(0, 12))
+
+        # Mode toggle — persists in config.json as ai_corpus_mode
+        from app.config import load_config as _load_cfg2
+        _cfg2 = _load_cfg2()
+        self._pipe_mode_var = ctk.StringVar(
+            value=_cfg2.get("ai_corpus_mode", "embeddings_only"))
+        ctk.CTkLabel(pipe_row, text="Mode:",
+                     font=ctk.CTkFont(size=11),
+                     text_color=COLORS["text_dim"]
+                     ).pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(
+            pipe_row,
+            values=["embeddings_only", "keep_audio"],
+            variable=self._pipe_mode_var,
+            width=170, height=30,
+            fg_color=COLORS["bg_input"], button_color=COLORS["accent"],
+            dropdown_fg_color=COLORS["bg_card"],
+            text_color=COLORS["text"],
+            command=self._toggle_pipe_mode,
+        ).pack(side="left")
+
         # ── About ────────────────────────────────────────────
         self._section(scroll, "About")
         about = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -884,6 +942,122 @@ class SettingsPage(ctk.CTkFrame):
         except Exception as e:
             from app.logger import log_error
             log_error("L4 reset failed", e)
+
+    def _refresh_pipe_status(self):
+        """Show corpus composition (user vs training/fma) + pair count."""
+        import threading
+
+        def work():
+            try:
+                from app.engine.library import get_connection
+                from app.engine import cooccurrence
+                conn = get_connection()
+                rows = conn.execute(
+                    "SELECT COALESCE(source, 'user') AS s, "
+                    "COUNT(*) AS n FROM tracks GROUP BY s").fetchall()
+                breakdown = {r[0]: r[1] for r in rows}
+                user_n = breakdown.get("user", 0)
+                train_n = breakdown.get("training", 0)
+                fma_n = breakdown.get("fma", 0)
+                n_pairs = cooccurrence.pair_count(conn)
+                txt = (f"Corpus : {user_n} user · {train_n} training · "
+                       f"{fma_n} FMA  ·  {n_pairs} paires cooccurrence")
+                self.after(0, lambda t=txt: self._pipe_status.configure(
+                    text=t, text_color=COLORS["text"]))
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True,
+                          name="pipe-status").start()
+
+    def _toggle_pipe_mode(self, _value: str = ""):
+        try:
+            from app.config import load_config, save_config
+            cfg = load_config()
+            cfg["ai_corpus_mode"] = self._pipe_mode_var.get()
+            save_config(cfg)
+        except Exception as e:
+            from app.logger import log_error
+            log_error("toggle pipe mode failed", e)
+
+    def _run_enrich_corpus(self):
+        """Fire the L4 training pipeline in a background thread,
+        progress mirrored to the activity tray."""
+        import threading
+        from app.engine import training_pipeline, tasks
+
+        self._pipe_run_btn.configure(state="disabled",
+                                       text="En cours…")
+        mode = self._pipe_mode_var.get() or "embeddings_only"
+
+        def work():
+            task = tasks.register(
+                "L4 — enrichissement corpus",
+                message="démarrage…")
+            try:
+                def _on_progress(phase, i, total, msg):
+                    # Map phases to overall progress fractions so the
+                    # progress bar is meaningful across the multi-stage run
+                    phase_ranges = {
+                        "discover":      (0.00, 0.02),
+                        "discover_sets": (0.02, 0.10),
+                        "scrape":        (0.10, 0.40),
+                        "resolve":       (0.40, 0.42),
+                        "download":      (0.42, 0.70),
+                        "analyze":       (0.70, 0.85),
+                        "cooc":          (0.85, 0.90),
+                        "train":         (0.90, 1.00),
+                    }
+                    lo, hi = phase_ranges.get(phase, (0.0, 1.0))
+                    if total > 0:
+                        frac = lo + (hi - lo) * (i / total)
+                    else:
+                        frac = lo
+                    tasks.update(
+                        task.id,
+                        progress=frac,
+                        message=f"[{phase}] {msg}"[:120])
+
+                summary = training_pipeline.enrich_corpus(
+                    target_pairs=2000,
+                    mode=mode,
+                    on_progress=_on_progress,
+                    retrain=True,
+                )
+                msg_parts = []
+                phases = summary.get("phases", {})
+                if "scrape" in phases:
+                    s = phases["scrape"]
+                    msg_parts.append(
+                        f"scrape {s.get('fetched',0)}/{s.get('failed',0)}")
+                if "downloaded" in phases:
+                    msg_parts.append(
+                        f"DL {phases['downloaded']}")
+                if "analyzed" in phases:
+                    msg_parts.append(
+                        f"ana {phases['analyzed']}")
+                msg_parts.append(
+                    f"paires={summary.get('total_pairs_after', 0)}")
+                if summary.get("model_retrained"):
+                    msg_parts.append("L4 retrained")
+                tasks.complete(
+                    task.id,
+                    success=not summary.get("aborted"),
+                    message=" · ".join(msg_parts))
+                self.after(0, self._refresh_pipe_status)
+                self.after(0, self._refresh_cooc_status)
+                self.after(0, self._refresh_model_status)
+            except Exception as e:
+                tasks.complete(task.id, success=False,
+                                message=f"Erreur : {str(e)[:60]}")
+                from app.logger import log_error
+                log_error("enrich_corpus failed", e)
+            finally:
+                self.after(0, lambda: self._pipe_run_btn.configure(
+                    state="normal", text="Enrichir le corpus"))
+
+        threading.Thread(target=work, daemon=True,
+                          name="enrich-corpus").start()
 
     def _refresh_cooc_status(self):
         """Re-read scraped-set + pair counts. Threaded — pair_count is

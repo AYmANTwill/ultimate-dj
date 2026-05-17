@@ -361,19 +361,34 @@ def discover_dj_sets(dj_slug: str, *, limit: int = 20) -> list[str]:
 def batch_scrape(urls: list[str], *,
                   on_progress: Callable[[int, int, str, str], None]
                                 | None = None,
-                  stop_event=None) -> dict:
-    """Fetch a list of tracklist URLs, respecting the 5s rate-limit.
+                  stop_event=None,
+                  max_consecutive_fails: int = 6,
+                  initial_backoff_s: float = 30.0,
+                  ) -> dict:
+    """Fetch a list of tracklist URLs, respecting the 5s rate-limit and
+    backing off when 1001tracklists starts kicking us out.
 
     Skips URLs that are already cached. Reports progress via
     ``on_progress(i, total, status, title_or_error)`` where status is
-    one of: "cache", "ok", "fail".
+    one of: "cache", "ok", "fail", "backoff", "aborted".
+
+    Circuit breaker: after ``max_consecutive_fails`` failures in a row
+    we pause for ``initial_backoff_s`` seconds (doubling each retry,
+    capped at 30 min) and try again. After 4 backoffs without recovery
+    we abort the whole run — Cloudflare has us flagged and continuing
+    will just burn the session.
 
     Pass a ``threading.Event`` as stop_event to allow cancellation.
 
-    Returns ``{"fetched": N, "cached": N, "failed": N}``.
+    Returns ``{"fetched": N, "cached": N, "failed": N, "aborted": bool}``.
     """
     fetched = cached = failed = 0
     total = len(urls)
+    consec_fails = 0
+    backoff_attempts = 0
+    aborted = False
+    backoff_s = initial_backoff_s
+
     for i, url in enumerate(urls, 1):
         if stop_event is not None and stop_event.is_set():
             log_info(f"batch_scrape: stopped at {i}/{total}")
@@ -381,6 +396,7 @@ def batch_scrape(urls: list[str], *,
         # Cache hit → no network at all
         if _cache_path(url).exists():
             cached += 1
+            consec_fails = 0    # cache hits reset the breaker
             if on_progress:
                 try:
                     on_progress(i, total, "cache", url)
@@ -390,6 +406,9 @@ def batch_scrape(urls: list[str], *,
         try:
             tl = fetch_tracklist(url, use_cache=False)
             fetched += 1
+            consec_fails = 0
+            backoff_attempts = 0
+            backoff_s = initial_backoff_s
             if on_progress:
                 try:
                     on_progress(i, total, "ok",
@@ -398,12 +417,49 @@ def batch_scrape(urls: list[str], *,
                     pass
         except Exception as e:
             failed += 1
+            consec_fails += 1
             log_warning(f"batch_scrape failed for {url}: {e}")
             if on_progress:
                 try:
                     on_progress(i, total, "fail", str(e)[:80])
                 except Exception:
                     pass
+            if consec_fails >= max_consecutive_fails:
+                backoff_attempts += 1
+                if backoff_attempts > 4:
+                    log_warning(
+                        "batch_scrape: 4 backoffs without recovery — "
+                        "aborting (Cloudflare likely has us flagged)")
+                    aborted = True
+                    if on_progress:
+                        try:
+                            on_progress(i, total, "aborted",
+                                         "Cloudflare backoff exhausted")
+                        except Exception:
+                            pass
+                    break
+                wait_s = min(1800.0, backoff_s)
+                log_warning(
+                    f"batch_scrape: {consec_fails} consecutive fails, "
+                    f"backing off {wait_s:.0f}s (attempt "
+                    f"{backoff_attempts}/4)")
+                if on_progress:
+                    try:
+                        on_progress(i, total, "backoff",
+                                     f"pause {wait_s:.0f}s")
+                    except Exception:
+                        pass
+                # Interruptible sleep
+                slept = 0.0
+                step = 1.0
+                while slept < wait_s:
+                    if stop_event is not None and stop_event.is_set():
+                        break
+                    time.sleep(step)
+                    slept += step
+                consec_fails = 0
+                backoff_s *= 2.0
     log_info(f"batch_scrape done — fetched={fetched}, "
-             f"cached={cached}, failed={failed}")
-    return {"fetched": fetched, "cached": cached, "failed": failed}
+             f"cached={cached}, failed={failed}, aborted={aborted}")
+    return {"fetched": fetched, "cached": cached, "failed": failed,
+            "aborted": aborted}
