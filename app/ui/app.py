@@ -126,33 +126,18 @@ class App(ctk.CTk):
         # Floating activity tray — appears top-left when any background
         # task registers itself, auto-hides when none are active. Single
         # source of truth for "what's the app currently doing".
-        # Lazy: at boot there are no tasks, so building the tray (~130 ms)
-        # is wasted work. We subscribe a lightweight bootstrap that
-        # constructs the real tray the first time a task registers, then
-        # unsubscribes itself — subsequent events flow to the tray's own
-        # subscription set up in its __init__.
-        from app.engine import tasks as _task_registry
-        self._activity_tray = None
-        def _bootstrap_tray():
-            # Worker thread may call this; marshal back to UI thread.
-            self.after(0, self._ensure_activity_tray)
-        self._tray_bootstrap = _bootstrap_tray
-        _task_registry.subscribe(_bootstrap_tray)
+        # Built eagerly + hidden until first task: the previous lazy
+        # subscriber-based bootstrap had thread-marshalling races that
+        # sometimes left the tray un-mounted even after register() had
+        # fired (the user clicked Segmenter / Reconstruire and saw
+        # nothing). Eager + place_forget is one tray construction at
+        # boot (~130 ms) but rock-solid afterwards.
+        from app.ui.activity_tray import ActivityTray
+        self._activity_tray = ActivityTray(self)
 
         # Global keyboard nav: Ctrl+1..9 → switch to the n-th page in
         # sidebar order, Ctrl+, → Settings (Mac convention).
         self._wire_keyboard_shortcuts()
-
-    def _ensure_activity_tray(self):
-        """Build the ActivityTray on first task registration. Idempotent
-        — subsequent calls are no-ops. Removes the bootstrap subscriber
-        so it doesn't fire forever."""
-        if self._activity_tray is not None:
-            return
-        from app.engine import tasks as _task_registry
-        _task_registry.unsubscribe(self._tray_bootstrap)
-        from app.ui.activity_tray import ActivityTray
-        self._activity_tray = ActivityTray(self)
 
     def _wire_keyboard_shortcuts(self):
         """Bind Ctrl+1..9 to the page-switch order so power users

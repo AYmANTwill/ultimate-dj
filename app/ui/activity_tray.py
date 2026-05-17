@@ -221,6 +221,12 @@ class ActivityTray(ctk.CTkFrame):
         # the sidebar correctly.
         try:
             self.place(x=224, y=12, width=_TRAY_W)
+            # Without lift() the tray is created BELOW the pages that
+            # were packed earlier in App.__init__ — Tk's default
+            # stacking order is creation-order, not z-index. lift()
+            # raises us to the top so the floating panel actually
+            # floats over whichever page is currently mounted.
+            self.lift()
         except Exception:
             pass
 
