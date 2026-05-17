@@ -221,6 +221,18 @@ class BrowserPanel(ctk.CTkFrame):
             command=self._close_embedded,
         ).pack(side="right", padx=2)
 
+        # Manual safety valve — if the embed somehow ends up the wrong
+        # size (DPI weirdness, a Configure event we missed), the user
+        # can click this to force a re-fit. Beats restarting the app.
+        ctk.CTkButton(
+            url_row, text="⇲ Ajuster", width=80,
+            height=26 if self._compact else 28,
+            font=ctk.CTkFont(size=10),
+            fg_color=COLORS["bg_input"], hover_color=COLORS["accent"],
+            text_color=COLORS["text"],
+            command=self._fit_now,
+        ).pack(side="right", padx=2)
+
         if not self._compact:
             ctk.CTkButton(
                 url_row, text="Effacer session", width=110, height=28,
@@ -237,6 +249,15 @@ class BrowserPanel(ctk.CTkFrame):
         self._show_placeholder()
 
         self.embed_host.bind("<Configure>", self._on_resize)
+        # Also refit when the whole app window resizes — without this
+        # the embed only repositions on its own immediate-parent's
+        # <Configure>, which the user can miss when dragging the main
+        # window between monitors with different DPI.
+        try:
+            self.winfo_toplevel().bind(
+                "<Configure>", self._on_toplevel_resize, add="+")
+        except Exception:
+            pass
 
     def _show_placeholder(self):
         for w in self.embed_host.winfo_children():
@@ -348,6 +369,21 @@ class BrowserPanel(ctk.CTkFrame):
         _fit(self._embedded_hwnd, w, h)
 
     def _on_resize(self, _event=None):
+        self._fit_now()
+
+    def _on_toplevel_resize(self, _event=None):
+        # Throttle: only refit if there is actually an embed and we
+        # haven't refit in the last 80 ms. Without this, dragging the
+        # window edge would call MoveWindow on every WM_SIZE message
+        # and the embed would flicker.
+        if not self._embedded_hwnd:
+            return
+        import time as _t
+        now = _t.monotonic()
+        last = getattr(self, "_last_refit_ts", 0.0)
+        if now - last < 0.08:
+            return
+        self._last_refit_ts = now
         self._fit_now()
 
     def _go_from_entry(self):

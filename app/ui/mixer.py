@@ -138,37 +138,45 @@ class MixerPage(ctk.CTkFrame):
         # transition_feedback table + data/feedback.jsonl audit log via
         # engine.feedback. The scorer reads this on every call so the
         # transitions list re-orders immediately after a vote.
-        fb_row = ctk.CTkFrame(right, fg_color="transparent")
-        fb_row.pack(fill="x", padx=12, pady=(0, 8))
+        # Pack order: buttons first on the RIGHT (so they always claim
+        # their pixel budget), then status fills the remaining left
+        # space. The previous "label expand=True + buttons left" order
+        # let the label eat the buttons' room on narrow layouts and the
+        # buttons disappeared.
+        fb_row = ctk.CTkFrame(right, fg_color=COLORS["bg_input"],
+                                corner_radius=8, height=38)
+        fb_row.pack(fill="x", padx=12, pady=(2, 8))
+        fb_row.pack_propagate(False)   # honour our explicit height
+        self._fb_clear_btn = ctk.CTkButton(
+            fb_row, text="×", width=30, height=28,
+            font=font(13, "bold"),
+            fg_color="transparent",
+            hover_color=COLORS["bg_card"],
+            text_color=COLORS["text_dim"],
+            command=lambda: self._vote(0), state="disabled")
+        self._fb_clear_btn.pack(side="right", padx=(2, 6), pady=4)
+        self._fb_dislike_btn = ctk.CTkButton(
+            fb_row, text="👎", width=42, height=28,
+            font=font(12, "bold"),
+            fg_color=COLORS["bg_card"],
+            hover_color=COLORS["error"],
+            text_color=COLORS["text"],
+            command=lambda: self._vote(-1), state="disabled")
+        self._fb_dislike_btn.pack(side="right", padx=2, pady=4)
+        self._fb_like_btn = ctk.CTkButton(
+            fb_row, text="👍", width=42, height=28,
+            font=font(12, "bold"),
+            fg_color=COLORS["bg_card"],
+            hover_color=COLORS["success"],
+            text_color=COLORS["text"],
+            command=lambda: self._vote(1), state="disabled")
+        self._fb_like_btn.pack(side="right", padx=2, pady=4)
         self._fb_status = ctk.CTkLabel(
             fb_row, text="Sélectionne une transition pour la noter",
             font=font(10), text_color=COLORS["text_dim"],
             anchor="w")
-        self._fb_status.pack(side="left", fill="x", expand=True)
-        self._fb_like_btn = ctk.CTkButton(
-            fb_row, text="👍", width=42, height=26,
-            font=font(12, "bold"),
-            fg_color=COLORS["bg_input"],
-            hover_color=COLORS["success"],
-            text_color=COLORS["text"],
-            command=lambda: self._vote(1), state="disabled")
-        self._fb_like_btn.pack(side="left", padx=2)
-        self._fb_dislike_btn = ctk.CTkButton(
-            fb_row, text="👎", width=42, height=26,
-            font=font(12, "bold"),
-            fg_color=COLORS["bg_input"],
-            hover_color=COLORS["error"],
-            text_color=COLORS["text"],
-            command=lambda: self._vote(-1), state="disabled")
-        self._fb_dislike_btn.pack(side="left", padx=2)
-        self._fb_clear_btn = ctk.CTkButton(
-            fb_row, text="×", width=30, height=26,
-            font=font(13, "bold"),
-            fg_color="transparent",
-            hover_color=COLORS["bg_input"],
-            text_color=COLORS["text_dim"],
-            command=lambda: self._vote(0), state="disabled")
-        self._fb_clear_btn.pack(side="left", padx=2)
+        self._fb_status.pack(side="left", fill="x", expand=True,
+                              padx=(8, 0), pady=4)
 
         # ── Dual-deck preview (bottom pane of the vertical sash) ─
         # Wrapping the explanatory header + the decks_row in a single
@@ -543,19 +551,19 @@ class MixerPage(ctk.CTkFrame):
                 text="👍 Aimé — bonus +12 appliqué",
                 text_color=COLORS["success"])
             self._fb_like_btn.configure(fg_color=COLORS["success"])
-            self._fb_dislike_btn.configure(fg_color=COLORS["bg_input"])
+            self._fb_dislike_btn.configure(fg_color=COLORS["bg_card"])
         elif s < 0:
             self._fb_status.configure(
                 text="👎 Pénalisée — score –25",
                 text_color=COLORS["error"])
-            self._fb_like_btn.configure(fg_color=COLORS["bg_input"])
+            self._fb_like_btn.configure(fg_color=COLORS["bg_card"])
             self._fb_dislike_btn.configure(fg_color=COLORS["error"])
         else:
             self._fb_status.configure(
                 text="Note cette transition (👍 / 👎)",
                 text_color=COLORS["text_dim"])
-            self._fb_like_btn.configure(fg_color=COLORS["bg_input"])
-            self._fb_dislike_btn.configure(fg_color=COLORS["bg_input"])
+            self._fb_like_btn.configure(fg_color=COLORS["bg_card"])
+            self._fb_dislike_btn.configure(fg_color=COLORS["bg_card"])
 
     def _sync_b_to_a(self):
         """Time-stretch Deck B's audio so its tempo matches Deck A's BPM.
