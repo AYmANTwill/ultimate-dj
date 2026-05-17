@@ -321,14 +321,15 @@ class SettingsPage(ctk.CTkFrame):
 
         struct_row = ctk.CTkFrame(struct_card, fg_color="transparent")
         struct_row.pack(fill="x", padx=12, pady=(0, 10))
-        ctk.CTkButton(
+        self._struct_btn = ctk.CTkButton(
             struct_row, text="Segmenter les nouveaux",
             width=200, height=32,
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
             text_color=COLORS["bg_dark"],
             command=self._run_segmentation,
-        ).pack(side="left", padx=(0, 6))
+        )
+        self._struct_btn.pack(side="left", padx=(0, 6))
 
         # ── AI · Co-occurrence (1001tracklists) ───────────────
         # Mines real DJ sets to find which local tracks pros mix
@@ -359,13 +360,14 @@ class SettingsPage(ctk.CTkFrame):
 
         cooc_row = ctk.CTkFrame(cooc_card, fg_color="transparent")
         cooc_row.pack(fill="x", padx=12, pady=(0, 10))
-        ctk.CTkButton(
+        self._cooc_btn = ctk.CTkButton(
             cooc_row, text="Reconstruire la matrice",
             width=200, height=32, font=ctk.CTkFont(size=12, weight="bold"),
             fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
             text_color=COLORS["bg_dark"],
             command=self._run_cooccurrence,
-        ).pack(side="left", padx=(0, 6))
+        )
+        self._cooc_btn.pack(side="left", padx=(0, 6))
 
         # ── AI · Modèle de transition (L4 Siamese) ────────────
         # Trains a tiny Siamese network on (outro, intro) pairs from
@@ -562,10 +564,19 @@ class SettingsPage(ctk.CTkFrame):
 
     def _run_cooccurrence(self):
         """Rebuild the track_pairs table from every cached tracklist.
-        Off-thread; progress + ETA mirror into the activity tray."""
+        Off-thread; progress + ETA mirror into the activity tray.
+
+        Gives immediate visual feedback (button + status) so the user
+        sees the click was registered while the worker spins up."""
         import threading
         from app.engine import cooccurrence, tasks
         from app.engine.library import get_connection
+
+        self._cooc_btn.configure(state="disabled",
+                                   text="En cours…")
+        self._cooc_status.configure(
+            text="démarrage rebuild… (voir activity tray top-left)",
+            text_color=COLORS["accent"])
 
         def work():
             task = tasks.register("Cooccurrence — rebuild",
@@ -583,6 +594,8 @@ class SettingsPage(ctk.CTkFrame):
             except Exception as e:
                 tasks.complete(task.id, success=False,
                                 message=f"Erreur : {str(e)[:60]}")
+                self.after(0, lambda: self._cooc_btn.configure(
+                    state="normal", text="Reconstruire la matrice"))
                 return
 
             self.after(0, lambda s=summary: self._cooc_status.configure(
@@ -594,6 +607,8 @@ class SettingsPage(ctk.CTkFrame):
                 task.id, success=True,
                 message=f"{summary['pairs']} paires actives, "
                         f"{summary['matched_tracks']} tracks reconnues")
+            self.after(0, lambda: self._cooc_btn.configure(
+                state="normal", text="Reconstruire la matrice"))
 
         threading.Thread(target=work, daemon=True,
                           name="cooccurrence-rebuild").start()
@@ -729,10 +744,23 @@ class SettingsPage(ctk.CTkFrame):
 
     def _run_segmentation(self):
         """Detect intro/outro on every un-segmented track. Threaded;
-        progress reported through the activity tray."""
+        progress reported through the activity tray.
+
+        Gives immediate UI feedback (button text + status label) so the
+        user sees the click was registered — the actual analyse work
+        runs in a daemon thread and surfaces in the top-left activity
+        tray, which can be off-screen on the Settings page.
+        """
         import threading
         from app.engine import library, tasks
         from app.engine.segmentation import detect_structure
+
+        # Immediate feedback so the user knows the click took
+        self._struct_btn.configure(state="disabled",
+                                     text="En cours…")
+        self._struct_status.configure(
+            text="démarrage segmentation… (voir activity tray top-left)",
+            text_color=COLORS["accent"])
 
         def work():
             task = tasks.register("Segmentation intro/outro",
@@ -782,6 +810,10 @@ class SettingsPage(ctk.CTkFrame):
             except Exception as e:
                 tasks.complete(task.id, success=False,
                                 message=f"Erreur : {str(e)[:60]}")
+            finally:
+                # Restore the button regardless of success / cancellation
+                self.after(0, lambda: self._struct_btn.configure(
+                    state="normal", text="Segmenter les nouveaux"))
 
         threading.Thread(target=work, daemon=True,
                           name="bulk-segment").start()
