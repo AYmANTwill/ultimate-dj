@@ -512,9 +512,17 @@ def _slug_variants(slug: str) -> list[str]:
 
 def _fetch_dj_index_html(dj_slug: str) -> tuple[str | None, str]:
     """Try the cloudscraper → playwright chain for one DJ slug. Returns
-    (html, actual_slug_used) where html is None on full failure."""
+    (html, actual_slug_used).
+
+    Raises ``IPLimitedError`` IMMEDIATELY if the IP-ban marker is seen
+    in either the cloudscraper or the playwright response — propagating
+    up at the earliest detection point so the loop in
+    ``discover_dj_sets`` can't accidentally swallow it when later
+    variants fail (e.g. cloudscraper 429 + playwright timeout returning
+    None, which used to make the function return 0 silently).
+    """
     url = f"https://www.1001tracklists.com/dj/{dj_slug}/index.html"
-    html: str | None = None
+    cloud_html: str | None = None
     sc = _scraper()
     if sc is not None:
         _wait_polite()
@@ -523,15 +531,37 @@ def _fetch_dj_index_html(dj_slug: str) -> tuple[str | None, str]:
         try:
             resp = sc.get(url, headers=headers, timeout=30)
             if resp.status_code in (200, 206):
-                html = resp.text
+                cloud_html = resp.text
         except Exception as e:
             log_warning(f"discover_dj_sets({dj_slug}) cloudscraper: {e}")
-    if html is None or _looks_like_js_shell(html):
-        if _playwright_available():
-            html = _playwright_get_html(url) or ""
-        else:
-            return None, dj_slug
-    return html, dj_slug
+
+    # Sticky IP-ban detection #1: cloudscraper response.
+    if cloud_html and _looks_like_ip_ban(cloud_html):
+        raise IPLimitedError(
+            f"1001tracklists rate-limited this IP (detected on "
+            f"/dj/{dj_slug}/ via cloudscraper)")
+
+    # If cloudscraper returned something usable (real content, no
+    # shell), return it.
+    if cloud_html is not None and not _looks_like_js_shell(cloud_html):
+        return cloud_html, dj_slug
+
+    # Otherwise escalate to playwright
+    if _playwright_available():
+        pw_html = _playwright_get_html(url)
+        # Sticky IP-ban detection #2: playwright response.
+        if pw_html and _looks_like_ip_ban(pw_html):
+            raise IPLimitedError(
+                f"1001tracklists rate-limited this IP (detected on "
+                f"/dj/{dj_slug}/ via playwright)")
+        if pw_html:
+            return pw_html, dj_slug
+
+    # Playwright failed too. Return cloudscraper's response if we have
+    # ANYTHING — useful for downstream debugging.
+    if cloud_html:
+        return cloud_html, dj_slug
+    return None, dj_slug
 
 
 def discover_dj_sets(dj_slug: str, *, limit: int = 20) -> list[str]:
