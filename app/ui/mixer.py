@@ -131,6 +131,45 @@ class MixerPage(ctk.CTkFrame):
             font=font(10), text_color=COLORS["text_dim"]
         ).pack(anchor="w", padx=12, pady=(0, 6))
 
+        # ── L5: feedback buttons (active learning) ───────────────
+        # Acts on the transition currently loaded on Deck B (via _load_b).
+        # 👍 adds +12 to that pair's score forever, 👎 subtracts 25
+        # (effectively banning it), × clears the vote. Persisted in
+        # transition_feedback table + data/feedback.jsonl audit log via
+        # engine.feedback. The scorer reads this on every call so the
+        # transitions list re-orders immediately after a vote.
+        fb_row = ctk.CTkFrame(right, fg_color="transparent")
+        fb_row.pack(fill="x", padx=12, pady=(0, 8))
+        self._fb_status = ctk.CTkLabel(
+            fb_row, text="Sélectionne une transition pour la noter",
+            font=font(10), text_color=COLORS["text_dim"],
+            anchor="w")
+        self._fb_status.pack(side="left", fill="x", expand=True)
+        self._fb_like_btn = ctk.CTkButton(
+            fb_row, text="👍", width=42, height=26,
+            font=font(12, "bold"),
+            fg_color=COLORS["bg_input"],
+            hover_color=COLORS["success"],
+            text_color=COLORS["text"],
+            command=lambda: self._vote(1), state="disabled")
+        self._fb_like_btn.pack(side="left", padx=2)
+        self._fb_dislike_btn = ctk.CTkButton(
+            fb_row, text="👎", width=42, height=26,
+            font=font(12, "bold"),
+            fg_color=COLORS["bg_input"],
+            hover_color=COLORS["error"],
+            text_color=COLORS["text"],
+            command=lambda: self._vote(-1), state="disabled")
+        self._fb_dislike_btn.pack(side="left", padx=2)
+        self._fb_clear_btn = ctk.CTkButton(
+            fb_row, text="×", width=30, height=26,
+            font=font(13, "bold"),
+            fg_color="transparent",
+            hover_color=COLORS["bg_input"],
+            text_color=COLORS["text_dim"],
+            command=lambda: self._vote(0), state="disabled")
+        self._fb_clear_btn.pack(side="left", padx=2)
+
         # ── Dual-deck preview (bottom pane of the vertical sash) ─
         # Wrapping the explanatory header + the decks_row in a single
         # CTkFrame so they live as one PanedWindow pane that can be
@@ -444,6 +483,79 @@ class MixerPage(ctk.CTkFrame):
                 self.sync_btn.configure(state="normal")
             except Exception:
                 pass
+            # Refresh the feedback panel for this new (A, B) pair
+            self._refresh_feedback_state()
+
+    def _vote(self, value: int) -> None:
+        """Persist a 👍 / 👎 / clear on the currently-loaded (A, B) pair
+        and re-score the transitions list so the change is visible
+        immediately. ``value`` is +1, -1 or 0 (clear)."""
+        if not self._selected or not self._b_track:
+            return
+        path_a = self._selected.get("path") or ""
+        path_b = self._b_track.get("path") or ""
+        if not path_a or not path_b:
+            return
+        try:
+            from app.engine.feedback import record as _fb_record
+            _fb_record(path_a, path_b, value, source="mixer")
+        except Exception as e:
+            log_error("feedback.record failed", e)
+            return
+        self._refresh_feedback_state()
+        # Re-rank transitions to reflect the new score modifier — runs
+        # off-thread because find_transitions is O(N) over the library.
+        if self._selected:
+            threading.Thread(
+                target=self._tx_thread, args=(self._selected,),
+                daemon=True).start()
+
+    def _refresh_feedback_state(self) -> None:
+        """Update the feedback row's label + button states based on the
+        currently-loaded (Deck A, Deck B) pair."""
+        if not self._selected or not self._b_track:
+            self._fb_status.configure(
+                text="Sélectionne une transition pour la noter",
+                text_color=COLORS["text_dim"])
+            for b in (self._fb_like_btn, self._fb_dislike_btn,
+                       self._fb_clear_btn):
+                try:
+                    b.configure(state="disabled")
+                except Exception:
+                    pass
+            return
+        try:
+            from app.engine.feedback import state as _fb_state
+            s = _fb_state(self._selected.get("path") or "",
+                           self._b_track.get("path") or "")
+        except Exception:
+            s = 0
+        # Enable the three voting buttons
+        for b in (self._fb_like_btn, self._fb_dislike_btn,
+                   self._fb_clear_btn):
+            try:
+                b.configure(state="normal")
+            except Exception:
+                pass
+        # Status label reflects current vote (and which button is "active")
+        if s > 0:
+            self._fb_status.configure(
+                text="👍 Aimé — bonus +12 appliqué",
+                text_color=COLORS["success"])
+            self._fb_like_btn.configure(fg_color=COLORS["success"])
+            self._fb_dislike_btn.configure(fg_color=COLORS["bg_input"])
+        elif s < 0:
+            self._fb_status.configure(
+                text="👎 Pénalisée — score –25",
+                text_color=COLORS["error"])
+            self._fb_like_btn.configure(fg_color=COLORS["bg_input"])
+            self._fb_dislike_btn.configure(fg_color=COLORS["error"])
+        else:
+            self._fb_status.configure(
+                text="Note cette transition (👍 / 👎)",
+                text_color=COLORS["text_dim"])
+            self._fb_like_btn.configure(fg_color=COLORS["bg_input"])
+            self._fb_dislike_btn.configure(fg_color=COLORS["bg_input"])
 
     def _sync_b_to_a(self):
         """Time-stretch Deck B's audio so its tempo matches Deck A's BPM.

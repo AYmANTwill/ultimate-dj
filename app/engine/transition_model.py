@@ -120,7 +120,9 @@ def feature_dim() -> int:
 
 def extract_pairs(conn: sqlite3.Connection,
                    *, neg_per_pos: int = 5,
-                   limit: int | None = None
+                   limit: int | None = None,
+                   include_user_feedback: bool = True,
+                   feedback_repeat: int = 3,
                    ) -> list[tuple[np.ndarray, np.ndarray, int]]:
     """Walk track_pairs (built by engine.cooccurrence) and emit a
     training set.
@@ -128,6 +130,13 @@ def extract_pairs(conn: sqlite3.Connection,
     Positives = pairs already in track_pairs (real-DJ co-plays).
     Negatives = randomly sampled non-pairs of the same library.
     Each example = (feat_a, feat_b, label) with label ∈ {0, 1}.
+
+    When ``include_user_feedback`` is set (default), every 👍/👎 stored
+    in ``engine.feedback`` is folded in as a high-confidence training
+    example and ``feedback_repeat``-times oversampled so the user's
+    personal taste is weighted heavier than the ambient 1001tracklists
+    signal (a few hand-rated pairs would otherwise be drowned out by
+    thousands of co-occurrence rows).
     """
     rows = conn.execute(
         "SELECT path_a, path_b FROM track_pairs LIMIT 100000"
@@ -135,7 +144,6 @@ def extract_pairs(conn: sqlite3.Connection,
     if not rows:
         log_warning("transition_model.extract_pairs: track_pairs empty "
                     "— run cooccurrence.rebuild() first")
-        return []
 
     # Index local tracks once so we can pull rows quickly
     track_rows = {
@@ -170,8 +178,31 @@ def extract_pairs(conn: sqlite3.Connection,
             examples.append((neg[0], neg[1], 0))
         if limit and len(examples) >= limit:
             break
-    log_info(f"extract_pairs: {len(examples)} examples "
-             f"({sum(1 for e in examples if e[2] == 1)} positives)")
+
+    # ── L5 → L4 bridge: fold in explicit user feedback ────────────
+    user_added = 0
+    if include_user_feedback:
+        try:
+            from app.engine.feedback import iter_for_training
+            for path_a, path_b, label in iter_for_training():
+                if path_a not in track_rows or path_b not in track_rows:
+                    continue
+                feats = _track_pair_features(
+                    track_rows[path_a], track_rows[path_b])
+                if feats is None:
+                    continue
+                # Oversample so a handful of hand-rated pairs aren't
+                # drowned by tens of thousands of cooccurrence rows
+                for _ in range(max(1, feedback_repeat)):
+                    examples.append((feats[0], feats[1], label))
+                    user_added += 1
+        except Exception as e:
+            log_warning(f"extract_pairs: feedback fold-in skipped: {e}")
+
+    log_info(
+        f"extract_pairs: {len(examples)} examples "
+        f"({sum(1 for e in examples if e[2] == 1)} positives, "
+        f"{user_added} from user feedback)")
     return examples
 
 
