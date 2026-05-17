@@ -367,6 +367,55 @@ class SettingsPage(ctk.CTkFrame):
             command=self._run_cooccurrence,
         ).pack(side="left", padx=(0, 6))
 
+        # ── AI · Modèle de transition (L4 Siamese) ────────────
+        # Trains a tiny Siamese network on (outro, intro) pairs from
+        # 1001tracklists cooccurrence + the user's own 👍/👎 feedback
+        # (oversampled). Once trained, transition_score adds ±10 raw
+        # points based on the model's learned similarity. Opt-in: needs
+        # `torch` installed, which is a heavy install (~700 MB) so we
+        # don't pull it by default.
+        self._section(scroll, "AI · Modèle de transition (L4 Siamese)")
+        model_card = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"],
+                                    corner_radius=8)
+        model_card.pack(fill="x", pady=3)
+
+        self._model_status = ctk.CTkLabel(
+            model_card, text="Chargement…",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_dim"])
+        self._model_status.pack(anchor="w", padx=12, pady=(10, 4))
+        self.after_idle(self._refresh_model_status)
+
+        ctk.CTkLabel(
+            model_card,
+            text=("Apprend de tes 👍/👎 sur le Mixer + des co-jeux "
+                  "1001tracklists. Pré-requis : pip install torch, "
+                  "ainsi qu'au moins quelques tracks encodées (embeddings) "
+                  "et une matrice de co-occurrence reconstruite. "
+                  "L'entraînement tourne en arrière-plan dans l'activity "
+                  "tray ; quelques minutes CPU sur une biblio moyenne."),
+            font=ctk.CTkFont(size=10), text_color=COLORS["text_dim"],
+            justify="left", wraplength=720
+        ).pack(anchor="w", padx=12, pady=(0, 6))
+
+        model_row = ctk.CTkFrame(model_card, fg_color="transparent")
+        model_row.pack(fill="x", padx=12, pady=(0, 10))
+        self._model_train_btn = ctk.CTkButton(
+            model_row, text="Entraîner le modèle",
+            width=200, height=32, font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["bg_dark"],
+            command=self._run_train_model,
+        )
+        self._model_train_btn.pack(side="left", padx=(0, 6))
+        self._model_reset_btn = ctk.CTkButton(
+            model_row, text="Réinitialiser",
+            width=120, height=32, font=ctk.CTkFont(size=11),
+            fg_color=COLORS["bg_input"], hover_color=COLORS["error"],
+            text_color=COLORS["text"],
+            command=self._reset_model,
+        )
+        self._model_reset_btn.pack(side="left", padx=(0, 6))
+
         # ── About ────────────────────────────────────────────
         self._section(scroll, "About")
         about = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -620,6 +669,167 @@ class SettingsPage(ctk.CTkFrame):
 
         threading.Thread(target=work, daemon=True,
                           name="bulk-segment").start()
+
+    def _refresh_model_status(self):
+        """Re-read the L4 transition model status — exists? when trained?
+        what dataset size? Threaded because pair_count + feedback.count
+        hit SQLite."""
+        import threading
+
+        def work():
+            try:
+                import json as _json
+                from app.engine import transition_model
+                from app.engine import cooccurrence, feedback
+                from app.engine.library import get_connection
+                ready = transition_model.is_ready()
+                meta = {}
+                if transition_model._META_PATH.exists():
+                    try:
+                        meta = _json.loads(
+                            transition_model._META_PATH.read_text(
+                                encoding="utf-8"))
+                    except Exception:
+                        meta = {}
+                n_pairs = cooccurrence.pair_count(get_connection())
+                fb_n = feedback.count().get("total", 0)
+                try:
+                    import torch  # noqa
+                    has_torch = True
+                except ImportError:
+                    has_torch = False
+
+                if ready:
+                    txt = (f"Modèle entraîné  ·  "
+                           f"{meta.get('n_pairs', '?')} exemples, "
+                           f"{meta.get('epochs', '?')} epochs  ·  "
+                           f"corpus actuel: {n_pairs} co-paires + "
+                           f"{fb_n} feedback")
+                    color = COLORS["success"]
+                elif not has_torch:
+                    txt = (f"Modèle non entraîné  ·  torch absent  ·  "
+                           f"corpus prêt: {n_pairs} co-paires + "
+                           f"{fb_n} feedback")
+                    color = COLORS["warning"]
+                else:
+                    txt = (f"Modèle non entraîné  ·  "
+                           f"corpus prêt: {n_pairs} co-paires + "
+                           f"{fb_n} feedback")
+                    color = COLORS["text_dim"]
+
+                self.after(0, lambda t=txt, c=color, h=has_torch, r=ready:
+                            self._apply_model_status(t, c, h, r))
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True,
+                          name="model-status-refresh").start()
+
+    def _apply_model_status(self, text: str, color: str,
+                             has_torch: bool, is_ready: bool):
+        """UI-thread setter for the model status row — also flips the
+        train button's enabled state based on whether torch is around."""
+        try:
+            self._model_status.configure(text=text, text_color=color)
+            self._model_train_btn.configure(
+                state="normal" if has_torch else "disabled")
+            self._model_reset_btn.configure(
+                state="normal" if is_ready else "disabled")
+        except Exception:
+            pass
+
+    def _run_train_model(self):
+        """Kick off transition_model.train() in a daemon thread, with
+        progress mirrored to the activity tray. Refuses to run if torch
+        is missing (the button would already be disabled in that case)."""
+        import threading
+        from app.engine import transition_model, tasks
+        from app.engine.library import get_connection
+
+        try:
+            import torch  # noqa
+        except ImportError:
+            self._model_status.configure(
+                text="torch n'est pas installé  ·  pip install torch",
+                text_color=COLORS["error"])
+            return
+
+        # Lock out double-clicks while training is in progress
+        self._model_train_btn.configure(state="disabled",
+                                         text="Entraînement…")
+
+        def work():
+            task = tasks.register(
+                "L4 — entraînement Siamese",
+                message="extraction des paires…")
+            try:
+                pairs = transition_model.extract_pairs(get_connection())
+                if not pairs:
+                    tasks.complete(
+                        task.id, success=False,
+                        message="aucun exemple — reconstruis la "
+                                "matrice de co-occurrence d'abord")
+                    return
+                tasks.update(task.id, progress=0.05,
+                              message=f"{len(pairs)} exemples → "
+                                      f"démarrage entraînement")
+                n_pairs_total = len(pairs)
+
+                def _on_epoch(frac: float, msg: str):
+                    # Reserve 5% for prep, 5% for the final save —
+                    # epochs span the middle 90% of the progress bar
+                    tasks.update(task.id,
+                                  progress=0.05 + frac * 0.90,
+                                  message=msg)
+
+                ok = transition_model.train(pairs, on_progress=_on_epoch)
+                if not ok:
+                    tasks.complete(
+                        task.id, success=False,
+                        message="échec entraînement — voir errors.log")
+                    return
+                tasks.complete(
+                    task.id, success=True,
+                    message=f"OK · modèle sauvegardé "
+                            f"({n_pairs_total} ex)")
+                self.after(0, self._refresh_model_status)
+            except Exception as e:
+                tasks.complete(task.id, success=False,
+                                message=f"Erreur : {str(e)[:60]}")
+                from app.logger import log_error
+                log_error("L4 train failed", e)
+            finally:
+                self.after(0, lambda: self._model_train_btn.configure(
+                    state="normal", text="Entraîner le modèle"))
+
+        threading.Thread(target=work, daemon=True,
+                          name="l4-train").start()
+
+    def _reset_model(self):
+        """Delete the saved transition.pt + meta. transition_score will
+        immediately fall back to the heuristic + cooc + feedback stack."""
+        from tkinter import messagebox
+        if not messagebox.askyesno(
+                "Réinitialiser le modèle L4 ?",
+                "Cela supprime data/models/transition.pt. Les scores "
+                "perdront le bonus ±10 du modèle, mais cooc + feedback "
+                "restent actifs. Tu peux ré-entraîner ensuite. Continuer ?"):
+            return
+        try:
+            from app.engine import transition_model
+            for p in (transition_model._MODEL_PATH,
+                       transition_model._META_PATH):
+                try:
+                    p.unlink()
+                except FileNotFoundError:
+                    pass
+            # Clear the in-memory cache so the next score() call
+            # actually reads None instead of the stale model object
+            transition_model._model_cache = None
+            self._refresh_model_status()
+        except Exception as e:
+            from app.logger import log_error
+            log_error("L4 reset failed", e)
 
     def _refresh_cooc_status(self):
         """Re-read scraped-set + pair counts. Threaded — pair_count is

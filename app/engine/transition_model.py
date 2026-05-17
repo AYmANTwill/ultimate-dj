@@ -210,11 +210,16 @@ def extract_pairs(conn: sqlite3.Connection,
 
 def train(pairs: list[tuple[np.ndarray, np.ndarray, int]] | None = None,
           *, epochs: int = 20, batch_size: int = 64,
-          lr: float = 1e-3) -> bool:
+          lr: float = 1e-3,
+          on_progress=None) -> bool:
     """Train the Siamese model. Returns True on success.
 
     Skipped silently if torch isn't installed — the rest of the app
     keeps working with the heuristic + cooccurrence stack.
+
+    ``on_progress(fraction, message)`` is invoked once per epoch with
+    fraction ∈ (0, 1] and a human-readable status line; designed to be
+    wired straight into ``engine.tasks.update``.
     """
     try:
         import torch
@@ -272,7 +277,15 @@ def train(pairs: list[tuple[np.ndarray, np.ndarray, int]] | None = None,
             loss.backward()
             opt.step()
             total_loss += float(loss) * len(sl)
-        log_info(f"epoch {ep + 1}/{epochs}  loss={total_loss / n:.4f}")
+        avg_loss = total_loss / n
+        log_info(f"epoch {ep + 1}/{epochs}  loss={avg_loss:.4f}")
+        if on_progress is not None:
+            try:
+                on_progress(
+                    (ep + 1) / epochs,
+                    f"epoch {ep + 1}/{epochs}  loss={avg_loss:.4f}")
+            except Exception:
+                pass
 
     _MODEL_DIR.mkdir(parents=True, exist_ok=True)
     torch.save(enc.state_dict(), _MODEL_PATH)

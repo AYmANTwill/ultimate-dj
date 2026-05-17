@@ -207,7 +207,7 @@ trainable skeleton in the tree; L5 is still on paper.
 | **L1** Pretrained audio embeddings (CLAP / PANNs / lite) | 256-d vector per track captures sonic identity. Cosine similarity feeds into `transition_score`. | ✅ shipped |
 | **L2** Co-occurrence from 1001tracklists | Position-decay weights mined from cached tracklists (`engine/cooccurrence.py`); plugged into `transition_score` as a 5th axis — tracks that pro DJs actually mix together get a bonus over tracks that just share a key. | ✅ shipped |
 | **L3** Structure segmentation | RMS-envelope heuristic (`engine/segmentation.py`) auto-detects `intro_end` / `outro_start` / drops on every `analyze_track`. Mixer scores outro-of-A vs intro-of-B instead of comparing whole tracks. | ✅ shipped |
-| **L4** Custom Siamese transition model | Trainable Siamese net (`engine/transition_model.py`) — shared encoder, contrastive loss on (outro_A, intro_B) pairs from 1001tracklists ordering + folded-in user feedback, ~200 k params, CPU-trainable. `score()` is already wired into `library.transition_score` (±10 pt swing); it's a no-op until a `transition.pt` exists. | 🟡 full pipeline shipped (extract + train + score wire-in); first-train still pending (needs `torch` + a few minutes CPU) |
+| **L4** Custom Siamese transition model | Trainable Siamese net (`engine/transition_model.py`) — shared encoder, contrastive loss on (outro_A, intro_B) pairs from 1001tracklists ordering + folded-in user feedback, ~200 k params, CPU-trainable. `score()` wired into `library.transition_score` (±10 pt swing); no-op until `transition.pt` exists. **Settings → AI · Modèle de transition** has a one-click train button with per-epoch progress in the activity tray, plus a reset button. | 🟡 full pipeline + training UI shipped; first user-triggered train + auto-retrain still pending (needs `torch`) |
 | **L5** Active learning | User feedback (👍 / 👎 on suggested transitions) — instant score modifier (+12 / –25) AND folded into the L4 training set as oversampled high-confidence examples. | 🟡 engine + DB + Mixer 👍/👎 buttons + scorer wire-in + L4 fold-in shipped; auto-retrain orchestration pending |
 
 ---
@@ -251,8 +251,8 @@ trainable skeleton in the tree; L5 is still on paper.
   + auto-scan librosa import moved to worker thread (no UI freeze)
 
 ### Next up
-- AI Level 4 — first actual training run on a real library (needs `torch`)
-- AI Level 5 — auto-retrain orchestration when enough new feedback accumulates
+- AI Level 4 — first user-triggered training (one click in Settings; needs `torch`)
+- AI Level 5 — auto-retrain orchestration when N new 👍/👎 accumulate since last train
 - 20+ engine-level tests (currently 12)
 - `pip-compile` lockfile + `ruff` + pre-commit
 
