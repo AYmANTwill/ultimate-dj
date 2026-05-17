@@ -1093,6 +1093,17 @@ class SettingsPage(ctk.CTkFrame):
                     on_progress=_on_progress,
                     retrain=True,
                 )
+                # If pipeline aborted with a specific reason (e.g. IP
+                # rate-limit), surface that distinctly so the user
+                # knows it's not a real "no data" outcome.
+                if summary.get("abort_reason"):
+                    tasks.complete(
+                        task.id, success=False,
+                        message=summary["abort_reason"][:120])
+                    self.after(0, lambda: self._pipe_status.configure(
+                        text=summary["abort_reason"],
+                        text_color=COLORS["error"]))
+                    return
                 msg_parts = []
                 phases = summary.get("phases", {})
                 if "scrape" in phases:

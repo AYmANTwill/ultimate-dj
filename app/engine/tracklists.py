@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -100,6 +101,153 @@ def _wait_polite():
     _last_fetch_at = time.time()
 
 
+# ── Playwright fallback (real headless browser) ─────────────────
+#
+# 1001tracklists renders all real content (DJ index, tracklist details)
+# via JavaScript after page load. cloudscraper grabs only the initial
+# HTML shell — which contains a "Please enable JavaScript" loader and
+# no actual tracklist data. We use Playwright + headless Chromium as
+# the fallback path: navigates, waits for content to render, then
+# returns the post-JS DOM.
+#
+# Playwright is optional — if it's not installed, we fall back to the
+# cloudscraper path and report 0 results clearly. ``pip install
+# playwright && playwright install chromium`` enables it.
+
+_PW_BROWSER = None         # cached Playwright browser instance
+_PW_CTX = None             # cached browser context (cookies)
+_PW_PLAYWRIGHT = None      # the playwright instance itself
+_PW_LOCK = threading.Lock()
+
+
+def _playwright_available() -> bool:
+    try:
+        import playwright    # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _playwright_get_html(url: str, *,
+                           wait_for_selector: str = "a[href*='/tracklist/']",
+                           timeout_ms: int = 25_000) -> str | None:
+    """Open `url` in a stealthed headless Chromium, wait for content
+    to render, return the post-JS DOM as a string. Returns None on any
+    failure (caller falls back / reports 0 results).
+
+    1001tracklists serves a "Please wait, you will be forwarded"
+    interstitial that ONLY redirects to the real page once it's
+    convinced you're a real browser. Vanilla headless Chromium fails
+    this check (navigator.webdriver = true, missing plugins, etc.).
+    We use playwright-stealth to patch all the standard tells, so the
+    forwarding script runs and we land on the real DJ / tracklist page.
+    """
+    global _PW_BROWSER, _PW_CTX, _PW_PLAYWRIGHT
+    if not _playwright_available():
+        return None
+    with _PW_LOCK:
+        try:
+            if _PW_BROWSER is None:
+                from playwright.sync_api import sync_playwright
+                _PW_PLAYWRIGHT = sync_playwright().start()
+                _PW_BROWSER = _PW_PLAYWRIGHT.chromium.launch(
+                    headless=True,
+                    args=["--disable-blink-features=AutomationControlled",
+                           "--no-sandbox"])
+                _PW_CTX = _PW_BROWSER.new_context(
+                    user_agent=_USER_AGENTS[0],
+                    viewport={"width": 1280, "height": 800},
+                    locale="en-US",
+                )
+                # playwright-stealth patches the context to hide the
+                # standard automation tells. Best-effort: if it's not
+                # installed, the bare context still works for non-
+                # protected pages.
+                try:
+                    from playwright_stealth import Stealth
+                    Stealth().apply_stealth_sync(_PW_CTX)
+                except ImportError:
+                    log_warning("playwright_stealth not installed — "
+                                "1001tracklists will probably reject "
+                                "the headless browser")
+                except Exception as e:
+                    log_warning(f"stealth init failed: {e}")
+            page = _PW_CTX.new_page()
+            try:
+                page.goto(url, wait_until="domcontentloaded",
+                          timeout=timeout_ms)
+                # Wait for at least one tracklist link to render — this
+                # is the cheapest "JS done" signal for both DJ index
+                # pages and individual tracklist pages.
+                try:
+                    page.wait_for_selector(
+                        wait_for_selector, timeout=timeout_ms)
+                except Exception:
+                    # Selector didn't appear — page might still have
+                    # content (set without tracks? track page that uses
+                    # a different selector?), so don't bail yet.
+                    pass
+                html = page.content()
+                return html
+            finally:
+                page.close()
+        except Exception as e:
+            log_warning(f"playwright fetch failed for {url}: {e}")
+            return None
+
+
+def _shutdown_playwright():
+    """Tear down the cached browser. Called from atexit."""
+    global _PW_BROWSER, _PW_CTX, _PW_PLAYWRIGHT
+    with _PW_LOCK:
+        try:
+            if _PW_BROWSER is not None:
+                _PW_BROWSER.close()
+            if _PW_PLAYWRIGHT is not None:
+                _PW_PLAYWRIGHT.stop()
+        except Exception:
+            pass
+        _PW_BROWSER = _PW_CTX = _PW_PLAYWRIGHT = None
+
+
+import atexit as _atexit
+_atexit.register(_shutdown_playwright)
+
+
+def _looks_like_js_shell(html: str) -> bool:
+    """Detect 1001tracklists' JS-rendered shell page: tiny content,
+    JS loader markers, no real tracklist links."""
+    if not html:
+        return True
+    if "tracklist/" in html:
+        return False
+    markers = ("Please enable JavaScript",
+                "class=\"loader",
+                "forwarding does not work")
+    return any(m in html for m in markers)
+
+
+class IPLimitedError(RuntimeError):
+    """Raised when 1001tracklists returns its 'Your IP has been limited
+    due to overuse' page. Distinct from other errors so callers can
+    surface a specific message: the only fix is to wait or use a
+    different network (VPN / different ISP)."""
+    pass
+
+
+def _looks_like_ip_ban(html: str) -> bool:
+    """Detect the 1001tracklists rate-limit / IP-ban page so we can
+    raise a distinct error instead of silently returning empty."""
+    if not html:
+        return False
+    markers = (
+        "Your IP or guest/user account has been limited",
+        "due to overuse",
+        "Fill out the captcha to unblock your IP",
+    )
+    return any(m in html for m in markers)
+
+
 def fetch_tracklist(url: str, *, use_cache: bool = True) -> dict:
     """Read a 1001tracklists URL and return:
         {
@@ -122,22 +270,50 @@ def fetch_tracklist(url: str, *, use_cache: bool = True) -> dict:
         except Exception:
             pass    # fall through and refetch
 
+    # Try the cheap path first (cloudscraper) — it occasionally works
+    # for cached / static responses. We immediately detect the
+    # JS-shell case and escalate to playwright when needed.
+    html: str | None = None
     sc = _scraper()
-    if sc is None:
-        raise RuntimeError("cloudscraper not installed — cannot fetch")
+    if sc is not None:
+        _wait_polite()
+        headers = {"User-Agent":
+                    _USER_AGENTS[int(time.time()) % len(_USER_AGENTS)]}
+        try:
+            resp = sc.get(url, headers=headers, timeout=30)
+            if resp.status_code in (200, 206):
+                html = resp.text
+        except Exception as e:
+            log_warning(f"cloudscraper failed for {url}: {e}")
 
-    _wait_polite()
-    headers = {"User-Agent": _USER_AGENTS[int(time.time()) % len(_USER_AGENTS)]}
-    try:
-        resp = sc.get(url, headers=headers, timeout=30)
-    except Exception as e:
-        raise RuntimeError(f"fetch failed: {e}") from e
-    if resp.status_code != 200:
-        raise RuntimeError(f"HTTP {resp.status_code} from 1001tracklists")
+    # If cloudscraper got nothing useful, escalate to playwright.
+    if html is None or _looks_like_js_shell(html):
+        if not _playwright_available():
+            raise RuntimeError(
+                "playwright not installed and cloudscraper returned a "
+                "JS shell — pip install playwright && playwright install "
+                "chromium to fix 1001tracklists scraping")
+        log_info(f"fetch_tracklist: escalating to playwright for {url}")
+        html = _playwright_get_html(url)
+        if html is None:
+            raise RuntimeError(
+                f"playwright fetch failed for {url}")
 
-    parsed = _parse_html(resp.text, url=url)
+    if _looks_like_ip_ban(html):
+        raise IPLimitedError(
+            "1001tracklists rate-limited this IP. Wait a few hours, "
+            "use a VPN, or run from a different network.")
+
+    parsed = _parse_html(html, url=url)
     parsed["scraped_at"] = int(time.time())
     parsed["cached"] = False
+
+    if not parsed.get("tracks"):
+        # Still empty? Don't cache nothing — re-raise so the caller can
+        # surface the issue instead of silently storing an empty set.
+        raise RuntimeError(
+            f"fetched but parsed 0 tracks from {url} — page layout may "
+            f"have changed or login is required")
 
     try:
         cached_path.write_text(
@@ -320,26 +496,49 @@ def discover_dj_sets(dj_slug: str, *, limit: int = 20) -> list[str]:
     "carl_cox" for https://www.1001tracklists.com/dj/carl_cox/index.html
 
     Returns a list of full URLs to individual sets, newest first.
-    Honours the 5s rate-limit. Returns an empty list on any failure
-    (Cloudflare flag, layout change, etc.) so callers can keep going.
+    Returns an empty list on any failure (network, layout change,
+    missing slug) so callers can keep going across the artist list.
+
+    Uses the playwright fallback when cloudscraper gets blocked by the
+    site's JS-rendered shell (the modern default for 1001tracklists).
     """
     from bs4 import BeautifulSoup
     import re as _re
-    sc = _scraper()
-    if sc is None:
-        return []
     url = f"https://www.1001tracklists.com/dj/{dj_slug}/index.html"
-    _wait_polite()
-    headers = {"User-Agent": _USER_AGENTS[int(time.time())
-                                            % len(_USER_AGENTS)]}
-    try:
-        resp = sc.get(url, headers=headers, timeout=30)
-    except Exception as e:
-        log_warning(f"discover_dj_sets({dj_slug}): {e}")
-        return []
-    if resp.status_code != 200:
-        return []
-    soup = BeautifulSoup(resp.text, "lxml")
+
+    # Cheap path first
+    html: str | None = None
+    sc = _scraper()
+    if sc is not None:
+        _wait_polite()
+        headers = {"User-Agent":
+                    _USER_AGENTS[int(time.time()) % len(_USER_AGENTS)]}
+        try:
+            resp = sc.get(url, headers=headers, timeout=30)
+            if resp.status_code in (200, 206):
+                html = resp.text
+        except Exception as e:
+            log_warning(f"discover_dj_sets({dj_slug}) cloudscraper: {e}")
+
+    # Escalate to playwright when cloudscraper returns a shell
+    if html is None or _looks_like_js_shell(html):
+        if not _playwright_available():
+            log_warning(
+                f"discover_dj_sets({dj_slug}): JS-rendered page, "
+                f"playwright not installed — install with "
+                f"`pip install playwright && playwright install chromium`")
+            return []
+        html = _playwright_get_html(url) or ""
+
+    if _looks_like_ip_ban(html):
+        # Propagate up so the orchestrator surfaces the issue clearly
+        # in the activity tray, instead of just looping over more
+        # artists and accumulating 0-URL results.
+        raise IPLimitedError(
+            f"1001tracklists rate-limited this IP "
+            f"(detected on /dj/{dj_slug}/)")
+
+    soup = BeautifulSoup(html, "lxml")
     # Set links live in anchors whose href matches /tracklist/<id>/<slug>.html
     seen: set[str] = set()
     out: list[str] = []

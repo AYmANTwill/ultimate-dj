@@ -29,6 +29,13 @@ REQUIREMENTS = [
     ("sounddevice",    "sounddevice>=0.4.6",     "sounddevice (lecture audio frame-precise)"),
     ("webview",        "pywebview>=6.0",         "pywebview (browser embarqué)"),
     ("cloudscraper",   "cloudscraper>=1.2.71",   "cloudscraper (1001tracklists)"),
+    # Playwright + stealth handle the JS-rendered shell that
+    # 1001tracklists serves to non-browser clients. Heavy install
+    # (~150 MB chromium) — done on first launch via deps.py install path
+    # below. App still works without these; the corpus enrichment
+    # pipeline just degrades gracefully and reports the failure.
+    ("playwright",        "playwright>=1.50.0",      "Playwright (JS scraping)"),
+    ("playwright_stealth","playwright-stealth>=2.0", "Playwright Stealth (bot evasion)"),
     ("bs4",            "beautifulsoup4>=4.12",   "BeautifulSoup (HTML parsing)"),
     ("lxml",           "lxml>=4.9",              "lxml (XML/HTML fast parser)"),
     ("keyring",        "keyring>=24.0",          "keyring (Windows Credential Manager)"),
@@ -106,6 +113,28 @@ def install_missing(status: dict, progress_cb=None) -> list[str]:
                 )
             except Exception as e:
                 errors.append(f"{label}: pip install failed — {e}")
+                continue
+            # Post-install: playwright also needs its Chromium binary
+            # (~150 MB). Don't fail the whole setup if Chromium download
+            # struggles — playwright code still works for non-protected
+            # pages, and the user can re-run `playwright install
+            # chromium` manually.
+            if detail.startswith("playwright>"):
+                if progress_cb:
+                    progress_cb(
+                        f"{label} — téléchargement Chromium (~150 MB)",
+                        i, total)
+                try:
+                    subprocess.run(
+                        [sys.executable, "-m", "playwright",
+                         "install", "chromium"],
+                        check=False, capture_output=True, timeout=900,
+                    )
+                except Exception as e:
+                    errors.append(
+                        f"{label}: chromium install failed (non-fatal) — "
+                        f"run `python -m playwright install chromium` "
+                        f"manually. Error: {e}")
 
     if progress_cb:
         progress_cb("Done", total, total)

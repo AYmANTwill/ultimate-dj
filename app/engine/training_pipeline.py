@@ -328,6 +328,17 @@ def enrich_corpus(target_pairs: int = 2000,
             f"{artist} ({slug})")
         try:
             urls = tracklists.discover_dj_sets(slug, limit=sets_per_dj)
+        except tracklists.IPLimitedError as e:
+            # 1001tracklists has rate-limited us. Continuing would
+            # just hit the same ban on every artist — abort the whole
+            # pipeline with a clear, user-facing message.
+            log_warning(f"IP rate-limited, aborting pipeline: {e}")
+            summary["aborted"] = True
+            summary["abort_reason"] = (
+                "1001tracklists a bloqué cette IP (rate-limit). "
+                "Réessaie dans quelques heures ou via un VPN.")
+            urls = []
+            break
         except Exception as e:
             log_warning(f"discover_dj_sets({slug}): {e}")
             urls = []

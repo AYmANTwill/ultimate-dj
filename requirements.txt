@@ -16,7 +16,11 @@ pyrubberband>=0.3.4         # optional (also needs rubberband.exe on PATH)
 # Downloads & 3rd-party APIs
 yt-dlp[default]>=2026.0.0
 spotipy>=2.23.0
-cloudscraper>=1.2.71
+cloudscraper>=1.2.71            # cheap path for static pages
+playwright>=1.50.0              # JS-rendered pages (1001tracklists);
+                                  # needs `playwright install chromium`
+                                  # after pip install (~150 MB download)
+playwright-stealth>=2.0         # bot-detection evasion for 1001tracklists
 beautifulsoup4>=4.12
 lxml>=4.9
 
