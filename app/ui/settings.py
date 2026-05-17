@@ -1082,34 +1082,40 @@ class SettingsPage(ctk.CTkFrame):
         """Build a (frame, progress_bar, step_label) widget group for
         inline progress reporting under any long-running button.
 
-        Returns the three widgets; the frame is NOT packed yet — call
-        ``_show_progress(frame, ...)`` to make it visible when a worker
-        starts, ``_hide_progress(frame)`` when it finishes.
+        The row is ALWAYS packed (never pack/unpack mid-task) — that
+        avoided the layout reflow that was glitching the Settings page
+        rendering when the Reconstruire button fired multiple progress
+        updates in quick succession. When idle the bar is at 0 and the
+        step label is empty, so visually the row is a thin invisible
+        strip; when a worker pushes updates it fills + populates.
         """
         f = ctk.CTkFrame(parent, fg_color="transparent")
+        # Always packed — the worker only mutates `bar.set()` and
+        # `step.configure(text=)`, which redraws in place without a
+        # parent reflow.
+        f.pack(fill="x", pady=(0, 4))
         bar = ctk.CTkProgressBar(
-            f, height=8,
+            f, height=6,
             fg_color=COLORS["bg_input"],
             progress_color=COLORS["accent"])
         bar.set(0)
-        bar.pack(fill="x", padx=12, pady=(0, 4))
+        bar.pack(fill="x", padx=12, pady=(0, 2))
         step = ctk.CTkLabel(
             f, text="", font=ctk.CTkFont(size=10),
             text_color=COLORS["text_dim"], anchor="w",
             justify="left", wraplength=720)
-        step.pack(anchor="w", padx=12, pady=(0, 6))
+        step.pack(anchor="w", padx=12, pady=(0, 4))
         return f, bar, step
 
     def _show_progress(self, frame, bar, step, fraction: float, msg: str):
-        """Thread-safe UI update — schedule on main loop. Pops the
-        progress row in if hidden, updates bar + step label."""
+        """Thread-safe UI update — schedule on main loop. Updates bar +
+        step label IN PLACE without re-packing (frame is always
+        mounted, so no layout reflow)."""
         def _apply():
             try:
-                if not frame.winfo_ismapped():
-                    frame.pack(fill="x", pady=(0, 6))
                 if fraction is not None:
                     bar.set(max(0.0, min(1.0, fraction)))
-                if msg:
+                if msg is not None:
                     step.configure(text=msg)
             except Exception:
                 pass
@@ -1119,10 +1125,17 @@ class SettingsPage(ctk.CTkFrame):
             pass
 
     def _hide_progress(self, frame):
-        """Hide the inline progress row once the worker finishes."""
+        """Reset the inline progress row to its idle visual state
+        (empty label + 0 % bar) once the worker finishes. Doesn't
+        pack_forget — leaving the strip in place avoids a reflow."""
         def _apply():
             try:
-                frame.pack_forget()
+                # Find the bar / step children to reset
+                for child in frame.winfo_children():
+                    if isinstance(child, ctk.CTkProgressBar):
+                        child.set(0)
+                    elif isinstance(child, ctk.CTkLabel):
+                        child.configure(text="")
             except Exception:
                 pass
         try:

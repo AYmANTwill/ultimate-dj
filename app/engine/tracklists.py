@@ -489,24 +489,31 @@ def list_cached_tracklists() -> list[dict]:
 
 # ── Phase 2: batch + DJ-discovery ────────────────────────────────
 
-def discover_dj_sets(dj_slug: str, *, limit: int = 20) -> list[str]:
-    """List recent set URLs from a DJ's profile page.
+def _slug_variants(slug: str) -> list[str]:
+    """Generate plausible 1001tracklists slug variants.
 
-    `dj_slug` is the part of the URL right after /dj/, e.g.
-    "carl_cox" for https://www.1001tracklists.com/dj/carl_cox/index.html
-
-    Returns a list of full URLs to individual sets, newest first.
-    Returns an empty list on any failure (network, layout change,
-    missing slug) so callers can keep going across the artist list.
-
-    Uses the playwright fallback when cloudscraper gets blocked by the
-    site's JS-rendered shell (the modern default for 1001tracklists).
+    The site is inconsistent: some DJs are at /dj/carl_cox/ (underscore),
+    others at /dj/charlottedewitte/ (no separator), some at
+    /dj/peggy-gou/ (hyphen). We try the user's input as-is first, then
+    the two other conventions, so the user doesn't have to know which
+    one the site picked for any given artist.
     """
-    from bs4 import BeautifulSoup
-    import re as _re
-    url = f"https://www.1001tracklists.com/dj/{dj_slug}/index.html"
+    s = slug.strip().lower()
+    if not s:
+        return []
+    base = s.replace("_", "").replace("-", "").replace(" ", "")
+    variants = [s]
+    for v in (s.replace("-", "_"), s.replace("_", "-"), base,
+               s.replace("-", "").replace("_", "")):
+        if v and v not in variants:
+            variants.append(v)
+    return variants
 
-    # Cheap path first
+
+def _fetch_dj_index_html(dj_slug: str) -> tuple[str | None, str]:
+    """Try the cloudscraper → playwright chain for one DJ slug. Returns
+    (html, actual_slug_used) where html is None on full failure."""
+    url = f"https://www.1001tracklists.com/dj/{dj_slug}/index.html"
     html: str | None = None
     sc = _scraper()
     if sc is not None:
@@ -519,42 +526,75 @@ def discover_dj_sets(dj_slug: str, *, limit: int = 20) -> list[str]:
                 html = resp.text
         except Exception as e:
             log_warning(f"discover_dj_sets({dj_slug}) cloudscraper: {e}")
-
-    # Escalate to playwright when cloudscraper returns a shell
     if html is None or _looks_like_js_shell(html):
-        if not _playwright_available():
-            log_warning(
-                f"discover_dj_sets({dj_slug}): JS-rendered page, "
-                f"playwright not installed — install with "
-                f"`pip install playwright && playwright install chromium`")
-            return []
-        html = _playwright_get_html(url) or ""
+        if _playwright_available():
+            html = _playwright_get_html(url) or ""
+        else:
+            return None, dj_slug
+    return html, dj_slug
 
-    if _looks_like_ip_ban(html):
-        # Propagate up so the orchestrator surfaces the issue clearly
-        # in the activity tray, instead of just looping over more
-        # artists and accumulating 0-URL results.
-        raise IPLimitedError(
-            f"1001tracklists rate-limited this IP "
-            f"(detected on /dj/{dj_slug}/)")
 
-    soup = BeautifulSoup(html, "lxml")
-    # Set links live in anchors whose href matches /tracklist/<id>/<slug>.html
-    seen: set[str] = set()
-    out: list[str] = []
-    for a in soup.find_all("a", href=_re.compile(r"^/tracklist/")):
-        href = a.get("href", "").split("?")[0]
-        if not href.endswith(".html"):
+def discover_dj_sets(dj_slug: str, *, limit: int = 20) -> list[str]:
+    """List recent set URLs from a DJ's profile page.
+
+    `dj_slug` is the part of the URL right after /dj/. The site has
+    no single naming convention (carl_cox, charlottedewitte,
+    peggy-gou…), so we try the user's input first, then automatic
+    variants (no-separator, hyphen↔underscore swap).
+
+    Returns a list of full URLs to individual sets, newest first.
+    Returns an empty list on any failure so callers can keep going
+    across the artist list.
+
+    Uses the playwright fallback when cloudscraper gets blocked by the
+    site's JS-rendered shell (the modern default for 1001tracklists).
+    Raises IPLimitedError if 1001tracklists rate-limited this IP, so
+    callers can abort cleanly instead of looping over more artists.
+    """
+    from bs4 import BeautifulSoup
+    import re as _re
+
+    variants = _slug_variants(dj_slug)
+    if not variants:
+        return []
+
+    last_html = ""
+    for variant in variants:
+        html, _ = _fetch_dj_index_html(variant)
+        if html is None:
             continue
-        full = "https://www.1001tracklists.com" + href
-        if full in seen:
-            continue
-        seen.add(full)
-        out.append(full)
-        if len(out) >= limit:
-            break
-    log_info(f"discover_dj_sets({dj_slug}): {len(out)} URLs")
-    return out
+        last_html = html
+        if _looks_like_ip_ban(html):
+            raise IPLimitedError(
+                f"1001tracklists rate-limited this IP "
+                f"(detected on /dj/{variant}/)")
+        soup = BeautifulSoup(html, "lxml")
+        # Set links live in anchors whose href matches /tracklist/<id>/<slug>.html
+        seen: set[str] = set()
+        out: list[str] = []
+        for a in soup.find_all("a", href=_re.compile(r"^/tracklist/")):
+            href = a.get("href", "").split("?")[0]
+            if not href.endswith(".html"):
+                continue
+            full = "https://www.1001tracklists.com" + href
+            if full in seen:
+                continue
+            seen.add(full)
+            out.append(full)
+            if len(out) >= limit:
+                break
+        if out:
+            log_info(
+                f"discover_dj_sets({dj_slug} → {variant}): {len(out)} URLs")
+            return out
+
+    # All variants exhausted — emit a richer warning so the user knows
+    # WHY (slug not found vs page layout changed vs JS shell)
+    log_warning(
+        f"discover_dj_sets({dj_slug}): tried {variants}, no tracklist "
+        f"links found. Either the slug doesn't exist on 1001tracklists "
+        f"or the page layout changed.")
+    return []
 
 
 def batch_scrape(urls: list[str], *,
