@@ -208,6 +208,80 @@ def extract_pairs(conn: sqlite3.Connection,
     return examples
 
 
+# ── Bootstrap dataset (heuristic distillation) ──────────────────
+#
+# When the user has no scraped 1001tracklists yet AND no 👍/👎
+# feedback, extract_pairs() returns []. To still ship a trainable L4
+# model on day-1, we distil the existing heuristic+cooc+feedback
+# transition_score: sample random pairs from the library, label them
+# strong-positive / strong-negative based on the heuristic, and train
+# the Siamese encoder to reproduce those labels. The model then acts
+# as a compact look-up for the heuristic — and *automatically* picks
+# up real DJ signal at the next retrain once cooc/feedback start to
+# fill in.
+
+def bootstrap_pairs(conn: sqlite3.Connection,
+                     *, n_positives: int = 500,
+                     n_negatives_per_pos: int = 2,
+                     pos_threshold: float = 75.0,
+                     neg_threshold: float = 40.0,
+                     max_attempts_factor: int = 80,
+                     ) -> list[tuple[np.ndarray, np.ndarray, int]]:
+    """Generate training pairs by distilling the heuristic+cooc+feedback
+    transition_score. Random rejection sampling — keeps pairs whose
+    score falls in the strong-positive (≥ pos_threshold) or strong-
+    negative (≤ neg_threshold) buckets, ignores the ambiguous middle.
+
+    Returns examples in the same shape as extract_pairs() so train()
+    can consume either source interchangeably.
+    """
+    from app.engine.library import transition_score
+    track_rows = [
+        dict(r) for r in conn.execute(
+            "SELECT * FROM tracks "
+            "WHERE embedding IS NOT NULL").fetchall()
+    ]
+    if len(track_rows) < 10:
+        log_warning(
+            "bootstrap_pairs: need ≥ 10 encoded tracks "
+            f"(have {len(track_rows)})")
+        return []
+
+    rng = np.random.default_rng(seed=42)
+    n_targ_neg = n_positives * max(1, n_negatives_per_pos)
+    examples: list[tuple[np.ndarray, np.ndarray, int]] = []
+    pos_kept = neg_kept = 0
+    max_attempts = (n_positives + n_targ_neg) * max_attempts_factor
+
+    for _ in range(max_attempts):
+        if pos_kept >= n_positives and neg_kept >= n_targ_neg:
+            break
+        i, j = rng.choice(len(track_rows), 2, replace=False)
+        ta, tb = track_rows[int(i)], track_rows[int(j)]
+        try:
+            s = transition_score(ta, tb)
+        except Exception:
+            continue
+        if s >= pos_threshold and pos_kept < n_positives:
+            feats = _track_pair_features(ta, tb)
+            if feats is None:
+                continue
+            examples.append((feats[0], feats[1], 1))
+            pos_kept += 1
+        elif s <= neg_threshold and neg_kept < n_targ_neg:
+            feats = _track_pair_features(ta, tb)
+            if feats is None:
+                continue
+            examples.append((feats[0], feats[1], 0))
+            neg_kept += 1
+
+    log_info(
+        f"bootstrap_pairs: {len(examples)} examples "
+        f"({pos_kept} positives, {neg_kept} negatives — distilled "
+        f"from heuristic transition_score on {len(track_rows)} tracks)")
+    return examples
+
+
 # ── Training (opt-in — needs torch) ──────────────────────────────
 
 def train(pairs: list[tuple[np.ndarray, np.ndarray, int]] | None = None,
@@ -233,7 +307,18 @@ def train(pairs: list[tuple[np.ndarray, np.ndarray, int]] | None = None,
 
     if pairs is None:
         from app.engine.library import get_connection
-        pairs = extract_pairs(get_connection())
+        conn = get_connection()
+        pairs = extract_pairs(conn)
+        if not pairs:
+            # No real DJ data yet (no cooccurrence + no user feedback) —
+            # fall back to the heuristic-distillation bootstrap so the
+            # model is at least useful on day-1. Next retrain (after the
+            # user scrapes some sets / votes on transitions) will see
+            # extract_pairs() return real data and supersede this.
+            log_info(
+                "transition_model.train: extract_pairs() empty, "
+                "falling back to bootstrap distillation")
+            pairs = bootstrap_pairs(conn)
     if not pairs:
         log_warning("transition_model.train: no training examples")
         return False
@@ -343,7 +428,16 @@ def _load_model():
 
     enc = Encoder()
     try:
-        enc.load_state_dict(torch.load(_MODEL_PATH))
+        # weights_only=True is safe — we wrote this file ourselves with
+        # torch.save(state_dict) and only need plain tensors back. Future
+        # torch versions flip this default; setting it explicitly keeps
+        # us forward-compatible AND silences the security warning.
+        try:
+            sd = torch.load(_MODEL_PATH, weights_only=True)
+        except TypeError:
+            # torch < 2.4 doesn't have weights_only kwarg yet
+            sd = torch.load(_MODEL_PATH)
+        enc.load_state_dict(sd)
         enc.eval()
         _model_cache = enc
         return enc

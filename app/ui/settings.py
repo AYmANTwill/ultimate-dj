@@ -784,16 +784,29 @@ class SettingsPage(ctk.CTkFrame):
                 "L4 — entraînement Siamese",
                 message="extraction des paires…")
             try:
-                pairs = transition_model.extract_pairs(get_connection())
+                conn = get_connection()
+                pairs = transition_model.extract_pairs(conn)
+                source = "1001tracklists + feedback"
+                if not pairs:
+                    # No real DJ data yet — fall back to the heuristic
+                    # distillation bootstrap so day-1 users still get a
+                    # trained model. Next retrain (once cooc / feedback
+                    # land) supersedes this with real signal.
+                    tasks.update(task.id, progress=0.02,
+                                  message="bootstrap (distillation "
+                                          "heuristique)…")
+                    pairs = transition_model.bootstrap_pairs(conn)
+                    source = "bootstrap (distillation)"
                 if not pairs:
                     tasks.complete(
                         task.id, success=False,
-                        message="aucun exemple — reconstruis la "
-                                "matrice de co-occurrence d'abord")
+                        message="aucun exemple — encode quelques "
+                                "tracks (Settings → Embeddings) "
+                                "d'abord")
                     return
                 tasks.update(task.id, progress=0.05,
-                              message=f"{len(pairs)} exemples → "
-                                      f"démarrage entraînement")
+                              message=f"{len(pairs)} exemples "
+                                      f"({source}) → train")
                 n_pairs_total = len(pairs)
 
                 def _on_epoch(frac: float, msg: str):
@@ -812,7 +825,7 @@ class SettingsPage(ctk.CTkFrame):
                 tasks.complete(
                     task.id, success=True,
                     message=f"OK · modèle sauvegardé "
-                            f"({n_pairs_total} ex)")
+                            f"({n_pairs_total} ex, {source})")
                 self.after(0, self._refresh_model_status)
             except Exception as e:
                 tasks.complete(task.id, success=False,

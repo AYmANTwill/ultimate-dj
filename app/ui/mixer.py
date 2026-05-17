@@ -456,17 +456,27 @@ class MixerPage(ctk.CTkFrame):
         # Bonuses + penalties
         ctk.CTkFrame(body, fg_color=COLORS["bg_input"], height=1
                       ).pack(fill="x", padx=12, pady=(8, 4))
-        for label, val, sign_color in [
-            ("Genre bonus",    bd["genre_bonus"],   COLORS["success"]),
-            ("Rating modifier", bd["rating_mod"],    COLORS["warning"]),
-            ("Same artist pen", bd["same_artist"],   COLORS["error"]),
-            ("Co-occurrence",   bd["cooc_bonus"],    COLORS["accent2"]),
+        for label, val, sign_color, extra in [
+            ("Genre bonus",     bd["genre_bonus"], COLORS["success"], ""),
+            ("Rating modifier", bd["rating_mod"],  COLORS["warning"], ""),
+            ("Same artist pen", bd["same_artist"], COLORS["error"],   ""),
+            ("Co-occurrence",   bd["cooc_bonus"],  COLORS["accent2"], ""),
+            ("L4 Siamese",      bd.get("model_bonus", 0.0),
+                                COLORS["accent"],
+                                bd.get("model_label", "")),
+            ("Feedback 👍/👎",   bd.get("feedback", 0.0),
+                                COLORS["success"]
+                                if bd.get("feedback", 0) >= 0
+                                else COLORS["error"], ""),
         ]:
             if val == 0:
                 continue
             sign = "+" if val > 0 else ""
+            text = f"{label:18s}  {sign}{val:.1f}"
+            if extra:
+                text += f"    {extra}"
             ctk.CTkLabel(
-                body, text=f"{label:24s}  {sign}{val:.1f}",
+                body, text=text,
                 font=font(11), text_color=sign_color, anchor="w",
                 justify="left"
             ).pack(anchor="w", padx=12, pady=2)

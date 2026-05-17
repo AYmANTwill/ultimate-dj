@@ -1187,6 +1187,20 @@ def transition_score_breakdown(track_a: dict, track_b: dict) -> dict:
     except Exception:
         fb = 0.0
 
+    # L4 model contribution — same mapping as in transition_score():
+    # raw model output [0, 100] → ±10 raw bonus around 50.
+    try:
+        from app.engine.transition_model import score as _model_score
+        m_raw = _model_score(track_a, track_b)
+    except Exception:
+        m_raw = None
+    if m_raw is not None:
+        model_bonus = round((m_raw - 50.0) * 0.20, 1)
+        model_label = f"siamese cosine {m_raw:.1f}/100"
+    else:
+        model_bonus = 0.0
+        model_label = "(modèle non entraîné)"
+
     return {
         "feedback":  fb,
         "key": {
@@ -1212,6 +1226,8 @@ def transition_score_breakdown(track_a: dict, track_b: dict) -> dict:
         "rating_mod":   rating_mod,
         "same_artist":  same_artist,
         "cooc_bonus":   coop_bonus,
+        "model_bonus":  model_bonus,
+        "model_label":  model_label,
         "total":        transition_score(track_a, track_b),
     }
 
