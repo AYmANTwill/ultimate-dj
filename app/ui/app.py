@@ -126,12 +126,33 @@ class App(ctk.CTk):
         # Floating activity tray — appears top-left when any background
         # task registers itself, auto-hides when none are active. Single
         # source of truth for "what's the app currently doing".
-        from app.ui.activity_tray import ActivityTray
-        self._activity_tray = ActivityTray(self)
+        # Lazy: at boot there are no tasks, so building the tray (~130 ms)
+        # is wasted work. We subscribe a lightweight bootstrap that
+        # constructs the real tray the first time a task registers, then
+        # unsubscribes itself — subsequent events flow to the tray's own
+        # subscription set up in its __init__.
+        from app.engine import tasks as _task_registry
+        self._activity_tray = None
+        def _bootstrap_tray():
+            # Worker thread may call this; marshal back to UI thread.
+            self.after(0, self._ensure_activity_tray)
+        self._tray_bootstrap = _bootstrap_tray
+        _task_registry.subscribe(_bootstrap_tray)
 
         # Global keyboard nav: Ctrl+1..9 → switch to the n-th page in
         # sidebar order, Ctrl+, → Settings (Mac convention).
         self._wire_keyboard_shortcuts()
+
+    def _ensure_activity_tray(self):
+        """Build the ActivityTray on first task registration. Idempotent
+        — subsequent calls are no-ops. Removes the bootstrap subscriber
+        so it doesn't fire forever."""
+        if self._activity_tray is not None:
+            return
+        from app.engine import tasks as _task_registry
+        _task_registry.unsubscribe(self._tray_bootstrap)
+        from app.ui.activity_tray import ActivityTray
+        self._activity_tray = ActivityTray(self)
 
     def _wire_keyboard_shortcuts(self):
         """Bind Ctrl+1..9 to the page-switch order so power users
@@ -158,11 +179,15 @@ class App(ctk.CTk):
     def _kick_off_auto_scan(self):
         """Spawn the background sync worker. Logs to errors.log so the
         user can audit what was added/removed (UI surfaces a status line
-        on Library page when they navigate there)."""
+        on Library page when they navigate there).
+
+        Heavy imports (analyzer pulls librosa, ~3-5 s on cold cache) are
+        deferred to the worker thread so they never block the UI. Only
+        the light bookkeeping imports happen on the main thread here.
+        """
         import threading
         from app.config import get_music_roots
         from app.engine import library
-        from app.engine.analyzer import analyze_track, write_tags
         from app.logger import log_info, log_error, log_warning
 
         roots = get_music_roots()
@@ -171,6 +196,10 @@ class App(ctk.CTk):
             return
 
         def work():
+            # Import analyzer (and its librosa dependency) inside the
+            # worker thread — keeps the main thread responsive while the
+            # heavy modules load.
+            from app.engine.analyzer import analyze_track, write_tags
             try:
                 conn = library.get_connection()
                 result = library.sync_library(conn, roots)

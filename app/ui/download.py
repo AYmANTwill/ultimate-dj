@@ -35,7 +35,10 @@ class FolderBrowser(ctk.CTkFrame):
         super().__init__(parent, fg_color=COLORS["bg_card"], corner_radius=10)
         # Force a minimum height so the listbox is *always* visible no
         # matter what fill mode our parent uses.
-        self.configure(height=200)
+        # 130 px = path bar + ~7 folder rows. Smaller default than before
+        # so the embedded browser below gets enough room to show Spotify's
+        # bottom playback bar at the default 750 px window height.
+        self.configure(height=130)
         self.pack_propagate(False)
         self._root_dir = Path(root_path)
         self._root_dir.mkdir(parents=True, exist_ok=True)
@@ -292,8 +295,11 @@ class DownloadPage(ctk.CTkFrame):
         self.folder_browser = FolderBrowser(self._main_pane, dl_root)
         # minsize lets users squash the folder list down to "just the
         # path bar"; height seeds the initial allocation.
+        # 130 px default = the embedded browser below gets enough room
+        # to render Spotify's bottom playback bar (drag the sash down
+        # to expand the folder list if you need to navigate deep trees).
         self._main_pane.add(self.folder_browser,
-                             minsize=44, height=200, stretch="never")
+                             minsize=44, height=130, stretch="never")
 
         # Track list / content area (takes remaining vertical space).
         # Holds either:
