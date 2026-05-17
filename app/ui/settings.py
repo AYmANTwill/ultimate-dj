@@ -416,6 +416,27 @@ class SettingsPage(ctk.CTkFrame):
         )
         self._model_reset_btn.pack(side="left", padx=(0, 6))
 
+        # Auto-retrain toggle — fires a background retrain every time
+        # the user has accumulated transition_model.AUTO_RETRAIN_THRESHOLD
+        # new 👍/👎 since the last train. Off by default (training is
+        # CPU-heavy and not everyone wants that running in the background).
+        from app.config import load_config as _load_cfg
+        _cfg = _load_cfg()
+        self._auto_retrain_var = ctk.BooleanVar(
+            value=bool(_cfg.get("ai_auto_retrain", False)))
+        ctk.CTkCheckBox(
+            model_card,
+            text=("Auto-réentraînement quand "
+                  f"≥ {self._auto_retrain_threshold_label()} "
+                  "nouveaux 👍/👎 s'accumulent depuis le dernier train"),
+            variable=self._auto_retrain_var,
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_dim"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            command=self._toggle_auto_retrain,
+        ).pack(anchor="w", padx=12, pady=(0, 10))
+
         # ── About ────────────────────────────────────────────
         self._section(scroll, "About")
         about = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -804,6 +825,26 @@ class SettingsPage(ctk.CTkFrame):
 
         threading.Thread(target=work, daemon=True,
                           name="l4-train").start()
+
+    def _auto_retrain_threshold_label(self) -> str:
+        try:
+            from app.engine.transition_model import AUTO_RETRAIN_THRESHOLD
+            return str(AUTO_RETRAIN_THRESHOLD)
+        except Exception:
+            return "10"
+
+    def _toggle_auto_retrain(self):
+        """Persist the on/off state to config.json. transition_model
+        re-reads it on every feedback.record() so the change takes
+        effect immediately — no app restart needed."""
+        try:
+            from app.config import load_config, save_config
+            cfg = load_config()
+            cfg["ai_auto_retrain"] = bool(self._auto_retrain_var.get())
+            save_config(cfg)
+        except Exception as e:
+            from app.logger import log_error
+            log_error("toggle auto-retrain failed", e)
 
     def _reset_model(self):
         """Delete the saved transition.pt + meta. transition_score will

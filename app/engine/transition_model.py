@@ -49,6 +49,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -289,10 +291,23 @@ def train(pairs: list[tuple[np.ndarray, np.ndarray, int]] | None = None,
 
     _MODEL_DIR.mkdir(parents=True, exist_ok=True)
     torch.save(enc.state_dict(), _MODEL_PATH)
+    # Snapshot the feedback count at train time so maybe_auto_retrain()
+    # can compute "new votes since last train" later.
+    try:
+        from app.engine.feedback import count as _fb_count
+        fb_at_train = _fb_count().get("total", 0)
+    except Exception:
+        fb_at_train = 0
     _META_PATH.write_text(json.dumps({
         "version": 1, "in_dim": in_dim, "out_dim": _OUT_DIM,
         "n_pairs": n, "epochs": epochs,
+        "trained_at": int(time.time()),
+        "feedback_count_at_train": fb_at_train,
     }), encoding="utf-8")
+    # Drop the in-memory cache so the next score() picks up the
+    # freshly-trained weights instead of the previous model object.
+    global _model_cache
+    _model_cache = None
     log_info(f"transition_model.train: saved {_MODEL_PATH}")
     return True
 
@@ -365,3 +380,118 @@ def score(track_a: dict, track_b: dict) -> float | None:
         return round(max(0.0, min(100.0, (cos + 1.0) * 50.0)), 1)
     except Exception:
         return None
+
+
+# ── L5 closure: auto-retrain trigger ─────────────────────────────
+# When the user's 👍/👎 count grows by AUTO_RETRAIN_THRESHOLD since
+# the last train, schedule a background retrain so the model learns
+# from the fresh feedback. The Settings page exposes an on/off toggle
+# (default off — heavy CPU cost) at config key "ai_auto_retrain".
+AUTO_RETRAIN_THRESHOLD = 10
+_RETRAIN_LOCK = threading.Lock()
+_retrain_in_progress = False
+
+
+def feedback_delta_since_train() -> int:
+    """How many new 👍/👎 votes since the last train ran. Returns the
+    full current feedback count if the model was never trained."""
+    try:
+        from app.engine.feedback import count as _fb_count
+        current = int(_fb_count().get("total", 0))
+    except Exception:
+        return 0
+    if not _META_PATH.exists():
+        return current
+    try:
+        meta = json.loads(_META_PATH.read_text(encoding="utf-8"))
+        baseline = int(meta.get("feedback_count_at_train", 0))
+    except Exception:
+        baseline = 0
+    return max(0, current - baseline)
+
+
+def maybe_auto_retrain(*, force: bool = False) -> bool:
+    """Check whether enough new feedback has accumulated to warrant
+    re-training. If so AND the auto-retrain toggle is on AND torch is
+    available AND no other train is running, fire ``train()`` in a
+    daemon thread (registered with engine.tasks so the activity tray
+    shows progress).
+
+    Returns True if a retrain was actually scheduled.
+
+    Non-blocking: safe to call from feedback.record() on every vote —
+    the cheap checks short-circuit before we touch the trainer.
+    """
+    global _retrain_in_progress
+    # Cheap-pass guards first — avoid even importing torch / config
+    # if obviously nothing to do.
+    if _retrain_in_progress:
+        return False
+    if not is_ready() and not force:
+        # No baseline model → user has to do the first train manually
+        # from Settings. Auto only ever RE-trains.
+        return False
+    if not force:
+        if feedback_delta_since_train() < AUTO_RETRAIN_THRESHOLD:
+            return False
+        try:
+            from app.config import load_config
+            if not load_config().get("ai_auto_retrain", False):
+                return False
+        except Exception:
+            return False
+    # Torch must be importable for training to succeed
+    try:
+        import torch  # noqa: F401
+    except ImportError:
+        return False
+
+    # Take the lock, double-check, and spawn the worker
+    with _RETRAIN_LOCK:
+        if _retrain_in_progress:
+            return False
+        _retrain_in_progress = True
+
+    def _work():
+        global _retrain_in_progress
+        task = None
+        try:
+            from app.engine import tasks as _tasks
+            from app.engine.library import get_connection
+            task = _tasks.register(
+                "L4 auto-retrain (feedback)",
+                message="extraction des paires…")
+            pairs = extract_pairs(get_connection())
+            if not pairs:
+                _tasks.complete(task.id, success=False,
+                                 message="aucun exemple disponible")
+                return
+            _tasks.update(task.id, progress=0.05,
+                           message=f"{len(pairs)} exemples → train")
+            def _ep(frac: float, msg: str):
+                _tasks.update(task.id,
+                               progress=0.05 + frac * 0.90,
+                               message=msg)
+            ok = train(pairs, on_progress=_ep)
+            if ok:
+                _tasks.complete(
+                    task.id, success=True,
+                    message=f"OK · re-entraîné sur {len(pairs)} ex")
+            else:
+                _tasks.complete(task.id, success=False,
+                                 message="échec — voir errors.log")
+        except Exception as e:
+            log_warning(f"auto-retrain failed: {e}")
+            if task is not None:
+                try:
+                    from app.engine import tasks as _tasks
+                    _tasks.complete(task.id, success=False,
+                                     message=f"erreur : {str(e)[:50]}")
+                except Exception:
+                    pass
+        finally:
+            _retrain_in_progress = False
+
+    threading.Thread(target=_work, daemon=True,
+                      name="l4-auto-retrain").start()
+    return True

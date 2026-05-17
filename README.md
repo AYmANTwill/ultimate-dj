@@ -208,7 +208,7 @@ trainable skeleton in the tree; L5 is still on paper.
 | **L2** Co-occurrence from 1001tracklists | Position-decay weights mined from cached tracklists (`engine/cooccurrence.py`); plugged into `transition_score` as a 5th axis — tracks that pro DJs actually mix together get a bonus over tracks that just share a key. | ✅ shipped |
 | **L3** Structure segmentation | RMS-envelope heuristic (`engine/segmentation.py`) auto-detects `intro_end` / `outro_start` / drops on every `analyze_track`. Mixer scores outro-of-A vs intro-of-B instead of comparing whole tracks. | ✅ shipped |
 | **L4** Custom Siamese transition model | Trainable Siamese net (`engine/transition_model.py`) — shared encoder, contrastive loss on (outro_A, intro_B) pairs from 1001tracklists ordering + folded-in user feedback, ~200 k params, CPU-trainable. `score()` wired into `library.transition_score` (±10 pt swing); no-op until `transition.pt` exists. **Settings → AI · Modèle de transition** has a one-click train button with per-epoch progress in the activity tray, plus a reset button. | 🟡 full pipeline + training UI shipped; first user-triggered train + auto-retrain still pending (needs `torch`) |
-| **L5** Active learning | User feedback (👍 / 👎 on suggested transitions) — instant score modifier (+12 / –25) AND folded into the L4 training set as oversampled high-confidence examples. | 🟡 engine + DB + Mixer 👍/👎 buttons + scorer wire-in + L4 fold-in shipped; auto-retrain orchestration pending |
+| **L5** Active learning | User feedback (👍 / 👎 on suggested transitions) — instant score modifier (+12 / –25) AND folded into the L4 training set as oversampled high-confidence examples. After every vote, `transition_model.maybe_auto_retrain()` checks the delta since the last train and (if the **Settings → AI · Modèle de transition** auto-retrain toggle is on, ≥ 10 new votes, torch available, and no train already running) fires a background retrain visible in the activity tray. | ✅ shipped end-to-end |
 
 ---
 
@@ -238,8 +238,8 @@ trainable skeleton in the tree; L5 is still on paper.
 - AI Level 1 — pretrained audio embeddings
 - AI Level 2 — 1001tracklists co-occurrence wired into the transition score
 - AI Level 3 — RMS-envelope intro/outro segmentation
-- AI Level 4 — Siamese transition model: `score()` wired into the scoreur with graceful fallback when untrained (opt-in, torch-gated)
-- AI Level 5 — feedback loop: 👍/👎 buttons in Mixer's Best Transitions, persisted in `transition_feedback` + `data/feedback.jsonl` audit log, immediate score modifier AND oversampled into L4's training set on next retrain
+- AI Level 4 — Siamese transition model end-to-end: `score()` wired into the scoreur with graceful fallback when untrained, one-click training UI in **Settings → AI · Modèle de transition**, per-epoch progress mirrored to the activity tray (opt-in, torch-gated)
+- AI Level 5 — 👍/👎 feedback loop fully closed: Mixer buttons → instant score modifier (+12 / –25) → oversampled into L4's training set → optional auto-retrain in the background when ≥ 10 new votes accumulate since the last train (toggle in Settings)
 - Discover page — 1-click batch scrape from a DJ slug
 - Activity tray — every background job visible top-left (lazy-built on first task)
 - `pyproject.toml` + 12 engine unit tests
@@ -252,7 +252,6 @@ trainable skeleton in the tree; L5 is still on paper.
 
 ### Next up
 - AI Level 4 — first user-triggered training (one click in Settings; needs `torch`)
-- AI Level 5 — auto-retrain orchestration when N new 👍/👎 accumulate since last train
 - 20+ engine-level tests (currently 12)
 - `pip-compile` lockfile + `ruff` + pre-commit
 

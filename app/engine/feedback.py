@@ -123,6 +123,16 @@ def record(path_a: str, path_b: str, like: int, *,
         "ts": now, "path_a": path_a, "path_b": path_b,
         "like": like, "source": source,
     })
+    # L5 closure: tell the L4 trainer that fresh feedback exists. The
+    # call is cheap when nothing needs to happen (checks toggle +
+    # threshold + lock before touching torch); fires a background
+    # retrain when the user has accumulated AUTO_RETRAIN_THRESHOLD new
+    # votes since the last train and the Settings toggle is on.
+    try:
+        from app.engine import transition_model
+        transition_model.maybe_auto_retrain()
+    except Exception:
+        pass     # never let auto-retrain failures block vote storage
 
 
 # ── Lookup (called on every transition_score) ───────────────────
