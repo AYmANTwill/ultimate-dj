@@ -135,12 +135,18 @@ class SettingsPage(ctk.CTkFrame):
         _tl_email, _tl_pwd = get_1001tracklists_credentials()
         ctk.CTkLabel(
             scroll,
-            text=("Colle email + mot de passe puis clique Login : une "
-                  "fenêtre Chromium visible s'ouvre, tu solves le "
-                  "captcha Cloudflare manuellement (1 fois), et on "
-                  "garde tes cookies pour les scrapes futurs. Les "
-                  "creds sont stockés via Windows Credential Manager "
-                  "(DPAPI) ; les cookies vivent dans data/."),
+            text=("Clique Login → une fenêtre Chromium s'ouvre sur la "
+                  "homepage 1001tracklists. Dans cette fenêtre : clique "
+                  "l'icône login en haut (la porte avec flèche), "
+                  "remplis email + mot de passe, solve le captcha "
+                  "Cloudflare, clique Sign in. Dès qu'on détecte un "
+                  "lien Logout sur la page, on save tes cookies et la "
+                  "fenêtre se ferme automatiquement. Email + mot de "
+                  "passe ci-dessous = juste stockés en sécurité (Win "
+                  "Credential Manager) pour ton info ; PAS auto-fillés "
+                  "dans la popup (le formulaire login s'ouvre via une "
+                  "modale dynamique qu'on ne peut pas pré-remplir "
+                  "fiablement)."),
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_dim"],
             justify="left", wraplength=720,

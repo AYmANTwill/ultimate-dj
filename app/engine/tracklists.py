@@ -114,19 +114,25 @@ def _wait_polite():
 # cloudscraper path and report 0 results clearly. ``pip install
 # playwright && playwright install chromium`` enables it.
 
-_PW_BROWSER = None         # cached Playwright browser instance
-_PW_CTX = None             # cached browser context (cookies)
-_PW_PLAYWRIGHT = None      # the playwright instance itself
-_PW_LOCK = threading.Lock()
+# Playwright's sync API is greenlet-bound: a sync_playwright() instance
+# can only be touched from the thread that created it. Sharing a global
+# cached browser across worker threads triggers
+# `greenlet.error: Cannot switch to a different thread`. So we keep one
+# (playwright, browser, ctx) triple PER THREAD via threading.local.
+_PW_TLS = threading.local()
+_PW_LOCK = threading.Lock()    # only protects _AUTH_STATE_PATH file writes
 
 # Persistent session cookies — saved after a successful login so we
 # don't have to re-authenticate on every app launch. Lives outside the
 # Spotify-style keyring (cookies aren't really "secrets" — they're
 # rotating tokens) but in the gitignored data/ folder.
 _AUTH_STATE_PATH = DATA_DIR / "tracklists_auth_state.json"
-# Real login endpoint — /login returns 404. /user/login is behind a
-# Cloudflare Turnstile captcha that a headless browser cannot pass.
-_LOGIN_URL = "https://www.1001tracklists.com/user/login"
+# 1001tracklists has no dedicated /login URL. /login → 404,
+# /user/login → "user not found" (the path /user/{name} treats "login"
+# as a username). Login is a modal triggered from the homepage's nav
+# bar. So we open the homepage and let the user click the login icon
+# themselves in the visible window.
+_HOMEPAGE_URL = "https://www.1001tracklists.com/"
 
 
 def _playwright_available() -> bool:
@@ -137,17 +143,19 @@ def _playwright_available() -> bool:
         return False
 
 
-def _init_browser_locked():
-    """Lazy-init the cached Playwright browser + context. Caller must
-    hold _PW_LOCK. Loads ``data/tracklists_auth_state.json`` if it
-    exists so saved login cookies are re-applied across app launches.
+def _get_thread_browser():
+    """Get or create THIS THREAD's Playwright browser + context. Returns
+    (browser, ctx). Each thread gets its own pair to avoid the
+    greenlet-cross-thread errors of the sync API.
+
+    Loads ``data/tracklists_auth_state.json`` if present so any saved
+    login cookies are re-applied at context creation time.
     """
-    global _PW_BROWSER, _PW_CTX, _PW_PLAYWRIGHT
-    if _PW_BROWSER is not None:
-        return
+    if getattr(_PW_TLS, "ctx", None) is not None:
+        return _PW_TLS.browser, _PW_TLS.ctx
     from playwright.sync_api import sync_playwright
-    _PW_PLAYWRIGHT = sync_playwright().start()
-    _PW_BROWSER = _PW_PLAYWRIGHT.chromium.launch(
+    _PW_TLS.pw = sync_playwright().start()
+    _PW_TLS.browser = _PW_TLS.pw.chromium.launch(
         headless=True,
         args=["--disable-blink-features=AutomationControlled",
                "--no-sandbox"])
@@ -156,9 +164,6 @@ def _init_browser_locked():
         viewport={"width": 1280, "height": 800},
         locale="en-US",
     )
-    # Re-use the last login session if we have one. Without storage_state
-    # every new browser context is logged out, so we'd hit the guest
-    # rate-limit on every run.
     if _AUTH_STATE_PATH.exists():
         try:
             ctx_args["storage_state"] = str(_AUTH_STATE_PATH)
@@ -167,31 +172,77 @@ def _init_browser_locked():
                 f"{_AUTH_STATE_PATH.name}")
         except Exception as e:
             log_warning(f"tracklists: failed to load auth state: {e}")
-    _PW_CTX = _PW_BROWSER.new_context(**ctx_args)
-    # Stealth — best-effort, see _playwright_get_html docstring.
+    _PW_TLS.ctx = _PW_TLS.browser.new_context(**ctx_args)
+    # Stealth — best-effort
     try:
         from playwright_stealth import Stealth
-        Stealth().apply_stealth_sync(_PW_CTX)
+        Stealth().apply_stealth_sync(_PW_TLS.ctx)
     except ImportError:
         log_warning("playwright_stealth not installed — "
                     "1001tracklists will probably reject the "
                     "headless browser")
     except Exception as e:
         log_warning(f"stealth init failed: {e}")
+    return _PW_TLS.browser, _PW_TLS.ctx
 
 
-def _save_auth_state_locked():
-    """Persist the current context's cookies + storage to disk. Caller
-    must hold _PW_LOCK and have a live _PW_CTX."""
-    if _PW_CTX is None:
-        return
+def _reset_thread_browser():
+    """Tear down THIS THREAD's cached Playwright instance, so the next
+    _get_thread_browser() picks up fresh cookies from disk."""
+    ctx = getattr(_PW_TLS, "ctx", None)
+    browser = getattr(_PW_TLS, "browser", None)
+    pw = getattr(_PW_TLS, "pw", None)
+    for x in (ctx, browser):
+        try:
+            if x is not None:
+                x.close()
+        except Exception:
+            pass
     try:
-        _AUTH_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _PW_CTX.storage_state(path=str(_AUTH_STATE_PATH))
-        log_info(
-            f"tracklists: saved login session to {_AUTH_STATE_PATH.name}")
-    except Exception as e:
-        log_warning(f"tracklists: failed to save auth state: {e}")
+        if pw is not None:
+            pw.stop()
+    except Exception:
+        pass
+    _PW_TLS.ctx = _PW_TLS.browser = _PW_TLS.pw = None
+
+
+def _save_auth_state(ctx) -> None:
+    """Persist a context's cookies + storage to disk. Thread-safe via
+    _PW_LOCK (only the file write is protected)."""
+    if ctx is None:
+        return
+    with _PW_LOCK:
+        try:
+            _AUTH_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            ctx.storage_state(path=str(_AUTH_STATE_PATH))
+            log_info(
+                f"tracklists: saved login session to "
+                f"{_AUTH_STATE_PATH.name}")
+        except Exception as e:
+            log_warning(f"tracklists: failed to save auth state: {e}")
+
+
+def _detect_logged_in(html: str) -> bool:
+    """Decide whether an arbitrary 1001tracklists page HTML is being
+    served to a logged-in user. STRICT detection: requires either an
+    explicit logout link OR a profile/account link, AND specifically
+    NOT showing the login icon. We err on the side of saying "no" so
+    we never claim success on a partial state."""
+    if not html:
+        return False
+    h = html.lower()
+    if _looks_like_ip_ban(h):
+        return False
+    # Positive signals — at least one must be present
+    has_logout = ("href=\"/user/logout" in h
+                  or "href='/user/logout" in h
+                  or ">logout<" in h
+                  or ">log out<" in h)
+    # Negative signal — the "join now" / signup CTA is only shown to
+    # logged-out users; its absence is a strong signal.
+    # We don't rely on absence alone (could be a layout glitch), but
+    # combined with logout link presence it's pretty conclusive.
+    return has_logout
 
 
 def login_with_credentials(email: str, password: str,
@@ -200,23 +251,29 @@ def login_with_credentials(email: str, password: str,
                             ) -> tuple[bool, str]:
     """Open a VISIBLE Chromium window so the user can log in to
     1001tracklists manually (incl. solving the Cloudflare Turnstile
-    captcha that a headless browser cannot pass). Once the user has
-    landed on the post-login page, we persist the session cookies to
-    ``data/tracklists_auth_state.json`` and close the window. Future
-    scrapes reuse those cookies in the cached headless browser.
+    captcha that a headless browser cannot pass).
 
-    The email + password are pre-filled into the form so the user only
-    has to solve the captcha + click Login. They are also stored in
-    the Windows Credential Manager (by the Settings UI worker before
-    calling us) so we can pre-fill again on a re-login.
+    Navigates to the homepage (NOT to a /login URL — 1001tracklists
+    triggers login from a modal in the top nav, there is no dedicated
+    login page). The user clicks the login icon, fills the form, and
+    solves the captcha inside this window. We poll the page's HTML
+    every second and as soon as a logout link appears (= logged in
+    for real) we save the cookies and close the window.
 
-    Returns ``(success, message)``. On success the cached headless
-    context is also reset so it picks up the new auth state on the
-    next request.
+    The email + password are NOT pre-filled (the modal might not be
+    open yet when we check) but they're stored in Windows Credential
+    Manager by the Settings UI so the user can copy-paste from the
+    Settings fields into the popup if they want.
+
+    Returns ``(success, message)``. On success the THIS-THREAD cached
+    Playwright instance is also reset so the next request reloads the
+    fresh cookies; OTHER threads pick them up at their next
+    _get_thread_browser() call (storage_state loaded from disk).
 
     ``wait_timeout_s`` is the upper bound (in seconds) we'll keep the
-    window open waiting for the user to complete the login flow.
-    Defaults to 5 minutes — plenty of time to solve a captcha.
+    window open. Defaults to 5 minutes. The user can close the window
+    at any time — if no logout link was ever seen we return False
+    with a clear message.
 
     If ``force=False`` and a saved session is already valid, returns
     immediately without opening any window.
@@ -234,154 +291,115 @@ def login_with_credentials(email: str, password: str,
         except Exception:
             pass
 
-    # Spawn a SEPARATE visible browser instance — we don't want to
-    # mess with the cached headless one (it's shared with the scraping
-    # workers). After login we save the storage_state to disk and
-    # reset the cached headless ctx so it reloads the cookies.
+    # Spawn a SEPARATE visible browser instance in THIS thread —
+    # don't reuse the (potentially cross-thread) cached headless one.
     from playwright.sync_api import sync_playwright
+    pw = None
+    browser = None
+    ctx = None
+    page = None
     try:
         pw = sync_playwright().start()
-    except Exception as e:
-        return False, f"playwright start failed: {e}"
-    try:
         browser = pw.chromium.launch(
             headless=False,
             args=["--disable-blink-features=AutomationControlled"])
-        ctx = browser.new_context(
+        ctx_args = dict(
             user_agent=_USER_AGENTS[0],
             viewport={"width": 1280, "height": 800},
             locale="en-US",
         )
-        # Stealth helps the captcha widget render properly even in a
-        # visible window.
+        # Pre-load any existing cookies so the user only has to log in
+        # again if their session truly expired.
+        if _AUTH_STATE_PATH.exists():
+            ctx_args["storage_state"] = str(_AUTH_STATE_PATH)
+        ctx = browser.new_context(**ctx_args)
         try:
             from playwright_stealth import Stealth
             Stealth().apply_stealth_sync(ctx)
         except Exception:
             pass
         page = ctx.new_page()
-        try:
-            page.goto(_LOGIN_URL, wait_until="domcontentloaded",
-                      timeout=30_000)
-            # Wait for the captcha to resolve + the real form to render
-            try:
-                page.wait_for_selector(
-                    "input[type='password'], input[name='password']",
-                    timeout=60_000)
-            except Exception:
-                # The Cloudflare challenge may take longer or fail
-                pass
-            # Best-effort pre-fill so the user only has to solve the
-            # captcha + click Login.
-            for sel in ("input[name='email']",
-                         "input[name='username']",
-                         "input[type='email']"):
-                try:
-                    page.fill(sel, email, timeout=2000)
-                    break
-                except Exception:
-                    continue
-            for sel in ("input[name='password']",
-                         "input[type='password']"):
-                try:
-                    page.fill(sel, password, timeout=2000)
-                    break
-                except Exception:
-                    continue
+        page.goto(_HOMEPAGE_URL, wait_until="domcontentloaded",
+                  timeout=30_000)
 
-            # Wait for the user to actually log in. We detect success
-            # when the URL no longer contains /user/login OR when a
-            # logout link appears on the page.
-            import time as _t
-            t0 = _t.time()
-            while _t.time() - t0 < wait_timeout_s:
+        # Poll for a logout link — strict success detection. We don't
+        # accept "url changed" or "no login link" as proof; only an
+        # explicit logout link means we're really authenticated.
+        import time as _t
+        t0 = _t.time()
+        last_check = 0.0
+        while _t.time() - t0 < wait_timeout_s:
+            now = _t.time()
+            if now - last_check > 1.5:
+                last_check = now
                 try:
-                    current_url = page.url or ""
-                    if "/user/login" not in current_url:
-                        break
-                    # Or the page itself renders a logout link
                     html = page.content() or ""
-                    if "logout" in html.lower() or \
-                            "log out" in html.lower():
+                    if _detect_logged_in(html):
                         break
                 except Exception:
                     pass
-                _t.sleep(1.0)
-            else:
-                return False, ("timeout — la fenêtre est restée sur "
-                                "/user/login pendant "
-                                f"{wait_timeout_s}s, login pas "
-                                "détecté")
+            # Also break if the user closes the window
+            try:
+                if page.is_closed():
+                    return False, ("fenêtre fermée avant détection du "
+                                    "login — clique Login 1001tracklists "
+                                    "puis termine le login dans la "
+                                    "fenêtre Chromium")
+            except Exception:
+                return False, "fenêtre Chromium fermée"
+            _t.sleep(0.5)
+        else:
+            return False, ("timeout — login pas détecté après "
+                            f"{wait_timeout_s}s. Login pas terminé ?")
 
-            # Save the storage_state for future runs
-            try:
-                _AUTH_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-                ctx.storage_state(path=str(_AUTH_STATE_PATH))
-            except Exception as e:
-                return False, f"sauvegarde cookies failed : {e}"
-            # Reset the cached headless context so the next scrape
-            # reloads the freshly-saved storage_state (with cookies).
-            global _PW_CTX
-            with _PW_LOCK:
-                if _PW_CTX is not None:
-                    try:
-                        _PW_CTX.close()
-                    except Exception:
-                        pass
-                    _PW_CTX = None
-            return True, f"connecté en tant que {email} — cookies sauvés"
-        finally:
-            try:
-                page.close()
-            except Exception:
-                pass
-            try:
-                ctx.close()
-            except Exception:
-                pass
-            try:
-                browser.close()
-            except Exception:
-                pass
+        # SUCCESS — save cookies + reset this thread's cached browser
+        try:
+            _AUTH_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            ctx.storage_state(path=str(_AUTH_STATE_PATH))
+        except Exception as e:
+            return False, f"sauvegarde cookies failed : {e}"
+        # Force this thread's headless browser to reload on next use
+        _reset_thread_browser()
+        return True, f"connecté en tant que {email} — cookies sauvés"
+
     except Exception as e:
         log_warning(f"login_with_credentials failed: {e}")
         return False, f"erreur login : {str(e)[:120]}"
     finally:
+        for closer, obj in (("page.close", page),
+                              ("ctx.close", ctx),
+                              ("browser.close", browser)):
+            try:
+                if obj is not None:
+                    obj.close()
+            except Exception:
+                pass
         try:
-            pw.stop()
+            if pw is not None:
+                pw.stop()
         except Exception:
             pass
 
 
-def is_logged_in_locked() -> bool:
-    """Heuristic check: load the user account page and see if it
-    renders without redirecting to /login. Caller holds _PW_LOCK and
-    has called _init_browser_locked() first.
-    """
-    if _PW_CTX is None:
+def is_logged_in() -> bool:
+    """Heuristic check: load the homepage in THIS thread's headless
+    browser and see if it renders a logout link. Returns False on any
+    error or if Playwright isn't available."""
+    if not _playwright_available():
         return False
-    page = _PW_CTX.new_page()
+    try:
+        _, ctx = _get_thread_browser()
+    except Exception:
+        return False
+    page = ctx.new_page()
     try:
         try:
-            page.goto("https://www.1001tracklists.com/index.html",
+            page.goto(_HOMEPAGE_URL,
                       wait_until="domcontentloaded", timeout=20_000)
-            html = page.content()
+            html = page.content() or ""
         except Exception:
             return False
-        if _looks_like_ip_ban(html):
-            # Banned regardless of login — say "no" so the caller can
-            # surface the right error.
-            return False
-        # Logged-in pages contain a "logout" link and the user's avatar
-        # menu. The /login link is only present when logged out.
-        # We accept either signal: presence of "logout" OR absence of
-        # the "Sign In" link.
-        if "logout" in html.lower() or "log out" in html.lower():
-            return True
-        # Fallback: pages where /login link is absent
-        if "href=\"/login\"" not in html and "href='/login'" not in html:
-            return True
-        return False
+        return _detect_logged_in(html)
     finally:
         try:
             page.close()
@@ -389,96 +407,66 @@ def is_logged_in_locked() -> bool:
             pass
 
 
-def is_logged_in() -> bool:
-    """Public thread-safe variant of is_logged_in_locked. Returns False
-    if Playwright isn't available."""
-    if not _playwright_available():
-        return False
-    with _PW_LOCK:
-        _init_browser_locked()
-        return is_logged_in_locked()
-
-
 def logout_and_clear_session() -> None:
-    """Delete the saved auth state file + reset the in-memory context
-    so the next request starts logged-out. Useful after the user
-    changes credentials in Settings."""
-    global _PW_CTX
+    """Delete the saved auth state file + reset THIS thread's
+    Playwright cache so the next request starts logged-out. Other
+    threads pick up the missing cookies at their next
+    _get_thread_browser() call."""
     try:
         if _AUTH_STATE_PATH.exists():
             _AUTH_STATE_PATH.unlink()
     except Exception:
         pass
-    with _PW_LOCK:
-        if _PW_CTX is not None:
-            try:
-                _PW_CTX.close()
-            except Exception:
-                pass
-            _PW_CTX = None
+    _reset_thread_browser()
 
 
 def _playwright_get_html(url: str, *,
                            wait_for_selector: str = "a[href*='/tracklist/']",
                            timeout_ms: int = 25_000) -> str | None:
-    """Open `url` in a stealthed headless Chromium, wait for content
-    to render, return the post-JS DOM as a string. Returns None on any
-    failure (caller falls back / reports 0 results).
-
-    1001tracklists serves a "Please wait, you will be forwarded"
-    interstitial that ONLY redirects to the real page once it's
-    convinced you're a real browser. Vanilla headless Chromium fails
-    this check (navigator.webdriver = true, missing plugins, etc.).
-    We use playwright-stealth to patch all the standard tells, so the
-    forwarding script runs and we land on the real DJ / tracklist page.
+    """Open `url` in THIS THREAD's stealthed headless Chromium, wait
+    for content to render, return the post-JS DOM. None on failure.
 
     Persistent auth state: when the user has logged in at least once
     via ``login_with_credentials``, the saved session cookies are
     re-applied on every browser startup, so requests are authenticated
     and aren't subject to the guest IP rate-limit.
     """
-    global _PW_BROWSER, _PW_CTX, _PW_PLAYWRIGHT
     if not _playwright_available():
         return None
-    with _PW_LOCK:
+    try:
+        _, ctx = _get_thread_browser()
+    except Exception as e:
+        log_warning(f"playwright init failed: {e}")
+        return None
+    try:
+        page = ctx.new_page()
         try:
-            _init_browser_locked()
-            page = _PW_CTX.new_page()
+            page.goto(url, wait_until="domcontentloaded",
+                      timeout=timeout_ms)
             try:
-                page.goto(url, wait_until="domcontentloaded",
-                          timeout=timeout_ms)
-                # Wait for at least one tracklist link to render — this
-                # is the cheapest "JS done" signal for both DJ index
-                # pages and individual tracklist pages.
-                try:
-                    page.wait_for_selector(
-                        wait_for_selector, timeout=timeout_ms)
-                except Exception:
-                    # Selector didn't appear — page might still have
-                    # content (set without tracks? track page that uses
-                    # a different selector?), so don't bail yet.
-                    pass
-                html = page.content()
-                return html
-            finally:
+                page.wait_for_selector(
+                    wait_for_selector, timeout=timeout_ms)
+            except Exception:
+                # Selector didn't appear — return the DOM anyway, the
+                # caller may still want to inspect it.
+                pass
+            html = page.content()
+            return html
+        finally:
+            try:
                 page.close()
-        except Exception as e:
-            log_warning(f"playwright fetch failed for {url}: {e}")
-            return None
+            except Exception:
+                pass
+    except Exception as e:
+        log_warning(f"playwright fetch failed for {url}: {e}")
+        return None
 
 
 def _shutdown_playwright():
-    """Tear down the cached browser. Called from atexit."""
-    global _PW_BROWSER, _PW_CTX, _PW_PLAYWRIGHT
-    with _PW_LOCK:
-        try:
-            if _PW_BROWSER is not None:
-                _PW_BROWSER.close()
-            if _PW_PLAYWRIGHT is not None:
-                _PW_PLAYWRIGHT.stop()
-        except Exception:
-            pass
-        _PW_BROWSER = _PW_CTX = _PW_PLAYWRIGHT = None
+    """Tear down THIS thread's Playwright cache. Called from atexit."""
+    _reset_thread_browser()
+    # No-op stubs to keep the legacy block harmless during cleanup
+    pass
 
 
 import atexit as _atexit
