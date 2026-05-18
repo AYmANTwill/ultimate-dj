@@ -123,6 +123,66 @@ class SettingsPage(ctk.CTkFrame):
         self.sp_secret = self._text_row(scroll, "Client Secret", _sec_now,
                                          show="*")
 
+        # ── 1001tracklists account (for the scraping pipeline) ─
+        # Guest users get rate-limited HARD on their IP after a few
+        # requests. A logged-in account lifts that quota dramatically
+        # (and on premium accounts removes it entirely). Creds go to
+        # Windows Credential Manager via secrets_store; the Playwright
+        # session cookies are persisted in data/tracklists_auth_state.json
+        # so we don't have to re-login on every app launch.
+        self._section(scroll, "1001tracklists account")
+        from app.secrets_store import get_1001tracklists_credentials
+        _tl_email, _tl_pwd = get_1001tracklists_credentials()
+        ctk.CTkLabel(
+            scroll,
+            text=("Crée un compte gratuit sur 1001tracklists.com puis "
+                  "colle email + mot de passe ici. Les creds sont "
+                  "stockés via Windows Credential Manager (DPAPI) ; "
+                  "les cookies de session vivent dans data/."),
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_dim"],
+            justify="left", wraplength=720,
+        ).pack(anchor="w", padx=4, pady=(0, 4))
+        self.tl_email = self._text_row(scroll, "Email", _tl_email)
+        self.tl_password = self._text_row(scroll, "Mot de passe",
+                                            _tl_pwd, show="*")
+
+        # Status row + Login / Logout buttons
+        tl_card = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"],
+                                corner_radius=8)
+        tl_card.pack(fill="x", pady=3)
+        self._tl_status = ctk.CTkLabel(
+            tl_card, text="(non connecté)",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_dim"])
+        self._tl_status.pack(anchor="w", padx=12, pady=(10, 4))
+
+        tl_row = ctk.CTkFrame(tl_card, fg_color="transparent")
+        tl_row.pack(fill="x", padx=12, pady=(0, 10))
+        self._tl_login_btn = ctk.CTkButton(
+            tl_row, text="Login 1001tracklists",
+            width=180, height=32,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["bg_dark"],
+            command=self._run_tl_login,
+        )
+        self._tl_login_btn.pack(side="left", padx=(0, 6))
+        self._tl_logout_btn = ctk.CTkButton(
+            tl_row, text="Logout / clear session",
+            width=180, height=32,
+            font=ctk.CTkFont(size=11),
+            fg_color=COLORS["bg_input"], hover_color=COLORS["error"],
+            text_color=COLORS["text"],
+            command=self._run_tl_logout,
+        )
+        self._tl_logout_btn.pack(side="left", padx=(0, 6))
+        # Inline progress for the login worker
+        (self._tl_prog_frame,
+         self._tl_prog_bar,
+         self._tl_prog_step) = self._make_progress_row(tl_card)
+        # Background refresh of the status row
+        self.after_idle(self._refresh_tl_status)
+
         # ── Audio section (locked to DJ-grade quality) ───────
         # 320 kbps MP3 is the universal DJ standard. Lower bitrates are
         # intentionally not offered — bad audio in a club kills the vibe.
@@ -1142,6 +1202,114 @@ class SettingsPage(ctk.CTkFrame):
             self.after(0, _apply)
         except Exception:
             pass
+
+    # ── 1001tracklists login (workers) ──────────────────────────
+
+    def _refresh_tl_status(self):
+        """Check whether a saved 1001tracklists session is still valid,
+        update the status row accordingly. Threaded — is_logged_in()
+        hits the network."""
+        import threading
+
+        def work():
+            from app.engine import tracklists
+            from app.engine.tracklists import _AUTH_STATE_PATH
+            try:
+                # Cheap path: if no auth state file, definitely not logged in
+                if not _AUTH_STATE_PATH.exists():
+                    self.after(0, lambda: self._tl_status.configure(
+                        text="(non connecté — clique Login)",
+                        text_color=COLORS["text_dim"]))
+                    return
+                ok = tracklists.is_logged_in()
+                if ok:
+                    msg = "✓ session 1001tracklists active"
+                    color = COLORS["success"]
+                else:
+                    msg = ("session expirée ou IP bannie — "
+                           "re-login ou change d'IP")
+                    color = COLORS["warning"]
+                self.after(0, lambda m=msg, c=color:
+                            self._tl_status.configure(
+                                text=m, text_color=c))
+            except Exception as e:
+                self.after(0, lambda e=e: self._tl_status.configure(
+                    text=f"erreur check: {str(e)[:60]}",
+                    text_color=COLORS["error"]))
+
+        threading.Thread(target=work, daemon=True,
+                          name="tl-status-refresh").start()
+
+    def _run_tl_login(self):
+        """Persist email/password to the keyring, then run the Playwright
+        login flow. Updates the inline progress + status."""
+        import threading
+        from app.secrets_store import set_1001tracklists_credentials
+
+        email = (self.tl_email.get() or "").strip()
+        password = (self.tl_password.get() or "")
+        if not email or not password:
+            self._tl_status.configure(
+                text="email + mot de passe requis",
+                text_color=COLORS["warning"])
+            return
+
+        # Save first so the user doesn't have to retype on a retry
+        set_1001tracklists_credentials(email, password)
+
+        self._tl_login_btn.configure(
+            state="disabled", text="Login en cours…")
+        self._show_progress(
+            self._tl_prog_frame, self._tl_prog_bar,
+            self._tl_prog_step, 0.1,
+            "lancement Playwright + navigation /login…")
+
+        def work():
+            try:
+                self._show_progress(
+                    self._tl_prog_frame, self._tl_prog_bar,
+                    self._tl_prog_step, 0.4,
+                    "soumission du formulaire de login…")
+                from app.engine import tracklists
+                ok, msg = tracklists.login_with_credentials(
+                    email, password, force=True)
+                self._show_progress(
+                    self._tl_prog_frame, self._tl_prog_bar,
+                    self._tl_prog_step, 1.0, msg)
+                color = (COLORS["success"] if ok
+                         else COLORS["error"])
+                self.after(0, lambda m=msg, c=color:
+                            self._tl_status.configure(
+                                text=m, text_color=c))
+            except Exception as e:
+                from app.logger import log_error
+                log_error("tl login failed", e)
+                self.after(0, lambda e=e: self._tl_status.configure(
+                    text=f"erreur : {str(e)[:80]}",
+                    text_color=COLORS["error"]))
+            finally:
+                self.after(0, lambda: self._tl_login_btn.configure(
+                    state="normal", text="Login 1001tracklists"))
+                self._hide_progress(self._tl_prog_frame)
+
+        threading.Thread(target=work, daemon=True,
+                          name="tl-login").start()
+
+    def _run_tl_logout(self):
+        """Wipe the saved session cookies + reset the Playwright
+        context. Doesn't touch the saved email/password."""
+        from app.engine import tracklists
+        try:
+            tracklists.logout_and_clear_session()
+            self._tl_status.configure(
+                text="déconnecté — session effacée",
+                text_color=COLORS["text_dim"])
+        except Exception as e:
+            from app.logger import log_error
+            log_error("tl logout failed", e)
+            self._tl_status.configure(
+                text=f"erreur logout : {str(e)[:60]}",
+                text_color=COLORS["error"])
 
     def _refresh_pipe_status(self):
         """Show corpus composition (user vs training/fma) + pair count."""

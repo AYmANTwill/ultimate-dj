@@ -131,3 +131,19 @@ def set_spotify_credentials(client_id: str, client_secret: str) -> None:
         save_config(cfg)
     except Exception:
         pass
+
+
+# ── 1001tracklists account (Win Credential Manager) ──────────────
+
+def get_1001tracklists_credentials() -> tuple[str, str]:
+    """(email, password) for the user's 1001tracklists account. Empty
+    strings if unset. Used by engine.tracklists for the authenticated
+    Playwright login flow that bypasses the guest IP rate-limit."""
+    return (get_secret("1001tracklists_email") or "",
+            get_secret("1001tracklists_password") or "")
+
+
+def set_1001tracklists_credentials(email: str, password: str) -> None:
+    """Store the 1001tracklists login in Windows Credential Manager."""
+    set_secret("1001tracklists_email", email)
+    set_secret("1001tracklists_password", password)

@@ -119,6 +119,13 @@ _PW_CTX = None             # cached browser context (cookies)
 _PW_PLAYWRIGHT = None      # the playwright instance itself
 _PW_LOCK = threading.Lock()
 
+# Persistent session cookies — saved after a successful login so we
+# don't have to re-authenticate on every app launch. Lives outside the
+# Spotify-style keyring (cookies aren't really "secrets" — they're
+# rotating tokens) but in the gitignored data/ folder.
+_AUTH_STATE_PATH = DATA_DIR / "tracklists_auth_state.json"
+_LOGIN_URL = "https://www.1001tracklists.com/login"
+
 
 def _playwright_available() -> bool:
     try:
@@ -126,6 +133,222 @@ def _playwright_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _init_browser_locked():
+    """Lazy-init the cached Playwright browser + context. Caller must
+    hold _PW_LOCK. Loads ``data/tracklists_auth_state.json`` if it
+    exists so saved login cookies are re-applied across app launches.
+    """
+    global _PW_BROWSER, _PW_CTX, _PW_PLAYWRIGHT
+    if _PW_BROWSER is not None:
+        return
+    from playwright.sync_api import sync_playwright
+    _PW_PLAYWRIGHT = sync_playwright().start()
+    _PW_BROWSER = _PW_PLAYWRIGHT.chromium.launch(
+        headless=True,
+        args=["--disable-blink-features=AutomationControlled",
+               "--no-sandbox"])
+    ctx_args: dict = dict(
+        user_agent=_USER_AGENTS[0],
+        viewport={"width": 1280, "height": 800},
+        locale="en-US",
+    )
+    # Re-use the last login session if we have one. Without storage_state
+    # every new browser context is logged out, so we'd hit the guest
+    # rate-limit on every run.
+    if _AUTH_STATE_PATH.exists():
+        try:
+            ctx_args["storage_state"] = str(_AUTH_STATE_PATH)
+            log_info(
+                f"tracklists: loaded saved login session from "
+                f"{_AUTH_STATE_PATH.name}")
+        except Exception as e:
+            log_warning(f"tracklists: failed to load auth state: {e}")
+    _PW_CTX = _PW_BROWSER.new_context(**ctx_args)
+    # Stealth — best-effort, see _playwright_get_html docstring.
+    try:
+        from playwright_stealth import Stealth
+        Stealth().apply_stealth_sync(_PW_CTX)
+    except ImportError:
+        log_warning("playwright_stealth not installed — "
+                    "1001tracklists will probably reject the "
+                    "headless browser")
+    except Exception as e:
+        log_warning(f"stealth init failed: {e}")
+
+
+def _save_auth_state_locked():
+    """Persist the current context's cookies + storage to disk. Caller
+    must hold _PW_LOCK and have a live _PW_CTX."""
+    if _PW_CTX is None:
+        return
+    try:
+        _AUTH_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _PW_CTX.storage_state(path=str(_AUTH_STATE_PATH))
+        log_info(
+            f"tracklists: saved login session to {_AUTH_STATE_PATH.name}")
+    except Exception as e:
+        log_warning(f"tracklists: failed to save auth state: {e}")
+
+
+def login_with_credentials(email: str, password: str,
+                            *, force: bool = False) -> tuple[bool, str]:
+    """Run the 1001tracklists login flow inside the cached Playwright
+    context. Saves the resulting session cookies to
+    ``data/tracklists_auth_state.json`` so future launches start
+    authenticated.
+
+    Returns ``(success, message)``. message is a short status line for
+    the UI (e.g. "Connecté en tant que aymen@...").
+
+    If ``force=False`` and we already have a valid session, returns
+    ``(True, "déjà connecté")`` without re-doing the login UI. Pass
+    ``force=True`` after entering new credentials.
+    """
+    if not _playwright_available():
+        return False, "playwright n'est pas installé"
+    if not email or not password:
+        return False, "email + mot de passe requis"
+
+    with _PW_LOCK:
+        _init_browser_locked()
+        # Fast path: if a saved session is already valid, no need to
+        # re-submit the form.
+        if not force and is_logged_in_locked():
+            return True, "déjà connecté (session sauvegardée)"
+
+        page = _PW_CTX.new_page()
+        try:
+            page.goto(_LOGIN_URL, wait_until="domcontentloaded",
+                      timeout=25_000)
+            html = page.content()
+            if _looks_like_ip_ban(html):
+                return False, ("ton IP est bannie par 1001tracklists — "
+                               "VPN ou hotspot avant de log")
+            # The login form fields can have slightly different names
+            # across page revisions — try the obvious selectors first.
+            for sel in ("input[name='email']",
+                         "input[name='username']",
+                         "input[type='email']"):
+                try:
+                    page.fill(sel, email, timeout=4000)
+                    break
+                except Exception:
+                    continue
+            else:
+                return False, "champ email introuvable sur la page login"
+            for sel in ("input[name='password']",
+                         "input[type='password']"):
+                try:
+                    page.fill(sel, password, timeout=4000)
+                    break
+                except Exception:
+                    continue
+            else:
+                return False, "champ mot de passe introuvable"
+            for sel in ("button[type='submit']",
+                         "input[type='submit']",
+                         "button:has-text('Login')",
+                         "button:has-text('Sign in')"):
+                try:
+                    page.click(sel, timeout=4000)
+                    break
+                except Exception:
+                    continue
+            else:
+                return False, "bouton submit introuvable"
+            # Wait for nav away from /login or a cookie that indicates
+            # we're logged in.
+            try:
+                page.wait_for_url(
+                    lambda u: "/login" not in u, timeout=15_000)
+            except Exception:
+                # Some sites keep you on /login with an error — check
+                # for an error banner.
+                final_html = page.content()
+                if "wrong" in final_html.lower() or \
+                        "incorrect" in final_html.lower() or \
+                        "invalid" in final_html.lower():
+                    return False, ("identifiants refusés par "
+                                    "1001tracklists")
+                # Fall through — maybe login worked, just no redirect
+
+            _save_auth_state_locked()
+            return True, f"connecté en tant que {email}"
+        except Exception as e:
+            log_warning(f"login_with_credentials failed: {e}")
+            return False, f"erreur login : {str(e)[:80]}"
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
+
+
+def is_logged_in_locked() -> bool:
+    """Heuristic check: load the user account page and see if it
+    renders without redirecting to /login. Caller holds _PW_LOCK and
+    has called _init_browser_locked() first.
+    """
+    if _PW_CTX is None:
+        return False
+    page = _PW_CTX.new_page()
+    try:
+        try:
+            page.goto("https://www.1001tracklists.com/index.html",
+                      wait_until="domcontentloaded", timeout=20_000)
+            html = page.content()
+        except Exception:
+            return False
+        if _looks_like_ip_ban(html):
+            # Banned regardless of login — say "no" so the caller can
+            # surface the right error.
+            return False
+        # Logged-in pages contain a "logout" link and the user's avatar
+        # menu. The /login link is only present when logged out.
+        # We accept either signal: presence of "logout" OR absence of
+        # the "Sign In" link.
+        if "logout" in html.lower() or "log out" in html.lower():
+            return True
+        # Fallback: pages where /login link is absent
+        if "href=\"/login\"" not in html and "href='/login'" not in html:
+            return True
+        return False
+    finally:
+        try:
+            page.close()
+        except Exception:
+            pass
+
+
+def is_logged_in() -> bool:
+    """Public thread-safe variant of is_logged_in_locked. Returns False
+    if Playwright isn't available."""
+    if not _playwright_available():
+        return False
+    with _PW_LOCK:
+        _init_browser_locked()
+        return is_logged_in_locked()
+
+
+def logout_and_clear_session() -> None:
+    """Delete the saved auth state file + reset the in-memory context
+    so the next request starts logged-out. Useful after the user
+    changes credentials in Settings."""
+    global _PW_CTX
+    try:
+        if _AUTH_STATE_PATH.exists():
+            _AUTH_STATE_PATH.unlink()
+    except Exception:
+        pass
+    with _PW_LOCK:
+        if _PW_CTX is not None:
+            try:
+                _PW_CTX.close()
+            except Exception:
+                pass
+            _PW_CTX = None
 
 
 def _playwright_get_html(url: str, *,
@@ -141,37 +364,18 @@ def _playwright_get_html(url: str, *,
     this check (navigator.webdriver = true, missing plugins, etc.).
     We use playwright-stealth to patch all the standard tells, so the
     forwarding script runs and we land on the real DJ / tracklist page.
+
+    Persistent auth state: when the user has logged in at least once
+    via ``login_with_credentials``, the saved session cookies are
+    re-applied on every browser startup, so requests are authenticated
+    and aren't subject to the guest IP rate-limit.
     """
     global _PW_BROWSER, _PW_CTX, _PW_PLAYWRIGHT
     if not _playwright_available():
         return None
     with _PW_LOCK:
         try:
-            if _PW_BROWSER is None:
-                from playwright.sync_api import sync_playwright
-                _PW_PLAYWRIGHT = sync_playwright().start()
-                _PW_BROWSER = _PW_PLAYWRIGHT.chromium.launch(
-                    headless=True,
-                    args=["--disable-blink-features=AutomationControlled",
-                           "--no-sandbox"])
-                _PW_CTX = _PW_BROWSER.new_context(
-                    user_agent=_USER_AGENTS[0],
-                    viewport={"width": 1280, "height": 800},
-                    locale="en-US",
-                )
-                # playwright-stealth patches the context to hide the
-                # standard automation tells. Best-effort: if it's not
-                # installed, the bare context still works for non-
-                # protected pages.
-                try:
-                    from playwright_stealth import Stealth
-                    Stealth().apply_stealth_sync(_PW_CTX)
-                except ImportError:
-                    log_warning("playwright_stealth not installed — "
-                                "1001tracklists will probably reject "
-                                "the headless browser")
-                except Exception as e:
-                    log_warning(f"stealth init failed: {e}")
+            _init_browser_locked()
             page = _PW_CTX.new_page()
             try:
                 page.goto(url, wait_until="domcontentloaded",
