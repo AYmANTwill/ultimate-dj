@@ -284,36 +284,29 @@ def _detect_logged_in(html: str) -> bool:
 
 def login_with_credentials(email: str, password: str,
                             *, force: bool = False,
-                            wait_timeout_s: int = 300,
+                            wait_timeout_s: int = 600,
                             ) -> tuple[bool, str]:
-    """Open a VISIBLE Chromium window so the user can log in to
-    1001tracklists manually (incl. solving the Cloudflare Turnstile
-    captcha that a headless browser cannot pass).
+    """Open a VISIBLE Chromium window on the 1001tracklists homepage.
+    The USER logs in manually (clicks the login icon, fills the modal,
+    solves the captcha, clicks Sign in). When they've finished, they
+    CLOSE THE WINDOW themselves — that's our signal to save the
+    cookies. We then verify by making a real scrape request, and the
+    return value reflects whether scraping actually works now.
 
-    Navigates to the homepage (NOT to a /login URL — 1001tracklists
-    triggers login from a modal in the top nav, there is no dedicated
-    login page). The user clicks the login icon, fills the form, and
-    solves the captcha inside this window. We poll the page's HTML
-    every second and as soon as a logout link appears (= logged in
-    for real) we save the cookies and close the window.
+    Why this design (instead of polling for a logout link in the
+    rendered HTML): 1001tracklists' nav uses icon buttons with JS
+    click handlers, not plain <a href="/user/logout"> links. Any
+    HTML-pattern heuristic produces false negatives (user is logged
+    in but we don't detect it) or false positives (random text in the
+    page matches). Letting the user close the window themselves is
+    100% reliable — they know when they've finished logging in.
 
-    The email + password are NOT pre-filled (the modal might not be
-    open yet when we check) but they're stored in Windows Credential
-    Manager by the Settings UI so the user can copy-paste from the
-    Settings fields into the popup if they want.
+    We ALSO save cookies every 5 s while the window is open, so a
+    crash mid-flow doesn't lose the session.
 
-    Returns ``(success, message)``. On success the THIS-THREAD cached
-    Playwright instance is also reset so the next request reloads the
-    fresh cookies; OTHER threads pick them up at their next
-    _get_thread_browser() call (storage_state loaded from disk).
-
-    ``wait_timeout_s`` is the upper bound (in seconds) we'll keep the
-    window open. Defaults to 5 minutes. The user can close the window
-    at any time — if no logout link was ever seen we return False
-    with a clear message.
-
-    If ``force=False`` and a saved session is already valid, returns
-    immediately without opening any window.
+    Returns ``(success, message)`` based on a real verification scrape
+    against /index.html — if it comes back without the IP-ban marker,
+    cookies are working; if it still hits the ban, login didn't take.
     """
     if not _playwright_available():
         return False, "playwright n'est pas installé"
@@ -328,8 +321,6 @@ def login_with_credentials(email: str, password: str,
         except Exception:
             pass
 
-    # Spawn a SEPARATE visible browser instance in THIS thread —
-    # don't reuse the (potentially cross-thread) cached headless one.
     from playwright.sync_api import sync_playwright
     pw = None
     browser = None
@@ -345,8 +336,6 @@ def login_with_credentials(email: str, password: str,
             viewport={"width": 1280, "height": 800},
             locale="en-US",
         )
-        # Pre-load any existing cookies so the user only has to log in
-        # again if their session truly expired.
         if _AUTH_STATE_PATH.exists():
             ctx_args["storage_state"] = str(_AUTH_STATE_PATH)
         ctx = browser.new_context(**ctx_args)
@@ -359,53 +348,51 @@ def login_with_credentials(email: str, password: str,
         page.goto(_HOMEPAGE_URL, wait_until="domcontentloaded",
                   timeout=30_000)
 
-        # Poll for a logout link — strict success detection. We don't
-        # accept "url changed" or "no login link" as proof; only an
-        # explicit logout link means we're really authenticated.
+        # Periodically dump cookies to disk while user works in popup.
+        # Final save happens after the loop (or when user closes window).
         import time as _t
         t0 = _t.time()
-        last_check = 0.0
+        last_save = 0.0
+        window_closed_by_user = False
         while _t.time() - t0 < wait_timeout_s:
-            now = _t.time()
-            if now - last_check > 1.5:
-                last_check = now
-                try:
-                    html = page.content() or ""
-                    if _detect_logged_in(html):
-                        break
-                except Exception:
-                    pass
-            # Also break if the user closes the window
             try:
                 if page.is_closed():
-                    return False, ("fenêtre fermée avant détection du "
-                                    "login — clique Login 1001tracklists "
-                                    "puis termine le login dans la "
-                                    "fenêtre Chromium")
+                    window_closed_by_user = True
+                    break
             except Exception:
-                return False, "fenêtre Chromium fermée"
+                window_closed_by_user = True
+                break
+            now = _t.time()
+            if now - last_save > 5.0:
+                last_save = now
+                try:
+                    _AUTH_STATE_PATH.parent.mkdir(
+                        parents=True, exist_ok=True)
+                    ctx.storage_state(path=str(_AUTH_STATE_PATH))
+                except Exception:
+                    pass
             _t.sleep(0.5)
-        else:
-            return False, ("timeout — login pas détecté après "
-                            f"{wait_timeout_s}s. Login pas terminé ?")
 
-        # SUCCESS — save cookies + reset this thread's cached browser
+        if not window_closed_by_user:
+            return False, ("timeout — fenêtre toujours ouverte après "
+                            f"{wait_timeout_s//60} min. Login pas "
+                            "terminé ? Re-clique Login et finis le "
+                            "flow dans la fenêtre Chromium puis ferme-"
+                            "la quand t'es loggé.")
+
+        # Final save (cookies file should already be up to date from
+        # the periodic dumps, but be safe)
         try:
             _AUTH_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
             ctx.storage_state(path=str(_AUTH_STATE_PATH))
-        except Exception as e:
-            return False, f"sauvegarde cookies failed : {e}"
-        # Force this thread's headless browser to reload on next use
-        _reset_thread_browser()
-        return True, f"connecté en tant que {email} — cookies sauvés"
+        except Exception:
+            pass
 
     except Exception as e:
         log_warning(f"login_with_credentials failed: {e}")
         return False, f"erreur login : {str(e)[:120]}"
     finally:
-        for closer, obj in (("page.close", page),
-                              ("ctx.close", ctx),
-                              ("browser.close", browser)):
+        for obj in (page, ctx, browser):
             try:
                 if obj is not None:
                     obj.close()
@@ -417,11 +404,41 @@ def login_with_credentials(email: str, password: str,
         except Exception:
             pass
 
+    # Verification: try a real scrape (fetch the homepage in HEADLESS
+    # mode using the saved cookies). If we hit the IP-ban marker, the
+    # login didn't take. If we DON'T hit it, login succeeded — even if
+    # we can't see a logout link, the cookies bypass the guest limit.
+    _reset_thread_browser()
+    try:
+        verify_html = _playwright_get_html(
+            _HOMEPAGE_URL, wait_for_selector="body", timeout_ms=20_000)
+    except Exception as e:
+        return True, (f"cookies sauvegardés. Vérif a échoué ({e}) — "
+                        "lance un scrape pour confirmer.")
+    if verify_html is None:
+        return True, ("cookies sauvegardés. Vérif n'a pas pu charger "
+                        "la home — lance un scrape pour confirmer.")
+    if _looks_like_ip_ban(verify_html):
+        return False, ("cookies sauvés MAIS la home affiche encore "
+                        "'IP banned'. Le login dans la fenêtre n'a "
+                        "pas été validé ou ton compte aussi est "
+                        "rate-limited.")
+    # Looks good — we got real content (not the ban page)
+    return True, (f"login validé en tant que {email} — cookies sauvés, "
+                    "la home charge sans le ban guest")
+
 
 def is_logged_in() -> bool:
-    """Heuristic check: load the homepage in THIS thread's headless
-    browser and see if it renders a logout link. Returns False on any
-    error or if Playwright isn't available."""
+    """Whether the saved cookies actually let us bypass the guest
+    rate-limit. We DON'T look for HTML markers like a logout link
+    (1001tracklists uses JS-handler icons, not <a href> links, so any
+    pattern is fragile). Instead we load the homepage in THIS thread's
+    headless browser and check that it DOESN'T return the
+    "Your IP has been limited" page — that's the real
+    functional test of whether the cookies work.
+
+    Returns False on any error or if Playwright isn't available.
+    """
     if not _playwright_available():
         return False
     try:
@@ -436,7 +453,13 @@ def is_logged_in() -> bool:
             html = page.content() or ""
         except Exception:
             return False
-        return _detect_logged_in(html)
+        # If we hit the IP ban page → cookies aren't working
+        if _looks_like_ip_ban(html):
+            return False
+        # If we got real content (any homepage content with no ban
+        # marker), assume the cookies work — even if we can't see a
+        # clear logout link.
+        return bool(html) and len(html) > 5000
     finally:
         try:
             page.close()

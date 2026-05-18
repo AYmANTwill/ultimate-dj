@@ -137,16 +137,16 @@ class SettingsPage(ctk.CTkFrame):
             scroll,
             text=("Clique Login → une fenêtre Chromium s'ouvre sur la "
                   "homepage 1001tracklists. Dans cette fenêtre : clique "
-                  "l'icône login en haut (la porte avec flèche), "
-                  "remplis email + mot de passe, solve le captcha "
-                  "Cloudflare, clique Sign in. Dès qu'on détecte un "
-                  "lien Logout sur la page, on save tes cookies et la "
-                  "fenêtre se ferme automatiquement. Email + mot de "
-                  "passe ci-dessous = juste stockés en sécurité (Win "
-                  "Credential Manager) pour ton info ; PAS auto-fillés "
-                  "dans la popup (le formulaire login s'ouvre via une "
-                  "modale dynamique qu'on ne peut pas pré-remplir "
-                  "fiablement)."),
+                  "l'icône login (la porte avec flèche), remplis email + "
+                  "mot de passe, solve le captcha Cloudflare, clique "
+                  "Sign in. UNE FOIS LOGGÉ — FERME LA FENÊTRE TOI-MÊME. "
+                  "Les cookies sont sauvegardés en continu pendant que "
+                  "tu y es ; à la fermeture on valide en faisant un "
+                  "vrai scrape de la home, et on te dit si ça marche. "
+                  "Email + mot de passe ci-dessous = juste stockés en "
+                  "sécurité (Win Credential Manager) pour ton info, PAS "
+                  "auto-fillés dans la popup (la modale login est "
+                  "dynamique et incompatible avec le pré-remplissage)."),
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_dim"],
             justify="left", wraplength=720,
@@ -1270,16 +1270,16 @@ class SettingsPage(ctk.CTkFrame):
         self._show_progress(
             self._tl_prog_frame, self._tl_prog_bar,
             self._tl_prog_step, 0.1,
-            "ouverture fenêtre Chromium visible — "
-            "solve le captcha + clique Login dedans, on attend…")
+            "ouverture fenêtre Chromium — login + captcha dans la "
+            "fenêtre, puis FERME-LA toi-même quand t'es loggé")
 
         def work():
             try:
                 self._show_progress(
                     self._tl_prog_frame, self._tl_prog_bar,
                     self._tl_prog_step, 0.4,
-                    "en attente du captcha + login utilisateur "
-                    "(jusqu'à 5 min)…")
+                    "en attente que tu fermes la fenêtre une fois "
+                    "loggé (jusqu'à 10 min)…")
                 from app.engine import tracklists
                 ok, msg = tracklists.login_with_credentials(
                     email, password, force=True)
