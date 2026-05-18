@@ -135,10 +135,12 @@ class SettingsPage(ctk.CTkFrame):
         _tl_email, _tl_pwd = get_1001tracklists_credentials()
         ctk.CTkLabel(
             scroll,
-            text=("Crée un compte gratuit sur 1001tracklists.com puis "
-                  "colle email + mot de passe ici. Les creds sont "
-                  "stockés via Windows Credential Manager (DPAPI) ; "
-                  "les cookies de session vivent dans data/."),
+            text=("Colle email + mot de passe puis clique Login : une "
+                  "fenêtre Chromium visible s'ouvre, tu solves le "
+                  "captcha Cloudflare manuellement (1 fois), et on "
+                  "garde tes cookies pour les scrapes futurs. Les "
+                  "creds sont stockés via Windows Credential Manager "
+                  "(DPAPI) ; les cookies vivent dans data/."),
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_dim"],
             justify="left", wraplength=720,
@@ -1262,14 +1264,16 @@ class SettingsPage(ctk.CTkFrame):
         self._show_progress(
             self._tl_prog_frame, self._tl_prog_bar,
             self._tl_prog_step, 0.1,
-            "lancement Playwright + navigation /login…")
+            "ouverture fenêtre Chromium visible — "
+            "solve le captcha + clique Login dedans, on attend…")
 
         def work():
             try:
                 self._show_progress(
                     self._tl_prog_frame, self._tl_prog_bar,
                     self._tl_prog_step, 0.4,
-                    "soumission du formulaire de login…")
+                    "en attente du captcha + login utilisateur "
+                    "(jusqu'à 5 min)…")
                 from app.engine import tracklists
                 ok, msg = tracklists.login_with_credentials(
                     email, password, force=True)

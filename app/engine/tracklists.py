@@ -124,7 +124,9 @@ _PW_LOCK = threading.Lock()
 # Spotify-style keyring (cookies aren't really "secrets" — they're
 # rotating tokens) but in the gitignored data/ folder.
 _AUTH_STATE_PATH = DATA_DIR / "tracklists_auth_state.json"
-_LOGIN_URL = "https://www.1001tracklists.com/login"
+# Real login endpoint — /login returns 404. /user/login is behind a
+# Cloudflare Turnstile captcha that a headless browser cannot pass.
+_LOGIN_URL = "https://www.1001tracklists.com/user/login"
 
 
 def _playwright_available() -> bool:
@@ -193,97 +195,162 @@ def _save_auth_state_locked():
 
 
 def login_with_credentials(email: str, password: str,
-                            *, force: bool = False) -> tuple[bool, str]:
-    """Run the 1001tracklists login flow inside the cached Playwright
-    context. Saves the resulting session cookies to
-    ``data/tracklists_auth_state.json`` so future launches start
-    authenticated.
+                            *, force: bool = False,
+                            wait_timeout_s: int = 300,
+                            ) -> tuple[bool, str]:
+    """Open a VISIBLE Chromium window so the user can log in to
+    1001tracklists manually (incl. solving the Cloudflare Turnstile
+    captcha that a headless browser cannot pass). Once the user has
+    landed on the post-login page, we persist the session cookies to
+    ``data/tracklists_auth_state.json`` and close the window. Future
+    scrapes reuse those cookies in the cached headless browser.
 
-    Returns ``(success, message)``. message is a short status line for
-    the UI (e.g. "Connecté en tant que aymen@...").
+    The email + password are pre-filled into the form so the user only
+    has to solve the captcha + click Login. They are also stored in
+    the Windows Credential Manager (by the Settings UI worker before
+    calling us) so we can pre-fill again on a re-login.
 
-    If ``force=False`` and we already have a valid session, returns
-    ``(True, "déjà connecté")`` without re-doing the login UI. Pass
-    ``force=True`` after entering new credentials.
+    Returns ``(success, message)``. On success the cached headless
+    context is also reset so it picks up the new auth state on the
+    next request.
+
+    ``wait_timeout_s`` is the upper bound (in seconds) we'll keep the
+    window open waiting for the user to complete the login flow.
+    Defaults to 5 minutes — plenty of time to solve a captcha.
+
+    If ``force=False`` and a saved session is already valid, returns
+    immediately without opening any window.
     """
     if not _playwright_available():
         return False, "playwright n'est pas installé"
     if not email or not password:
         return False, "email + mot de passe requis"
 
-    with _PW_LOCK:
-        _init_browser_locked()
-        # Fast path: if a saved session is already valid, no need to
-        # re-submit the form.
-        if not force and is_logged_in_locked():
-            return True, "déjà connecté (session sauvegardée)"
+    # Fast path: already logged in? Skip the popup.
+    if not force:
+        try:
+            if is_logged_in():
+                return True, "déjà connecté (session sauvegardée)"
+        except Exception:
+            pass
 
-        page = _PW_CTX.new_page()
+    # Spawn a SEPARATE visible browser instance — we don't want to
+    # mess with the cached headless one (it's shared with the scraping
+    # workers). After login we save the storage_state to disk and
+    # reset the cached headless ctx so it reloads the cookies.
+    from playwright.sync_api import sync_playwright
+    try:
+        pw = sync_playwright().start()
+    except Exception as e:
+        return False, f"playwright start failed: {e}"
+    try:
+        browser = pw.chromium.launch(
+            headless=False,
+            args=["--disable-blink-features=AutomationControlled"])
+        ctx = browser.new_context(
+            user_agent=_USER_AGENTS[0],
+            viewport={"width": 1280, "height": 800},
+            locale="en-US",
+        )
+        # Stealth helps the captcha widget render properly even in a
+        # visible window.
+        try:
+            from playwright_stealth import Stealth
+            Stealth().apply_stealth_sync(ctx)
+        except Exception:
+            pass
+        page = ctx.new_page()
         try:
             page.goto(_LOGIN_URL, wait_until="domcontentloaded",
-                      timeout=25_000)
-            html = page.content()
-            if _looks_like_ip_ban(html):
-                return False, ("ton IP est bannie par 1001tracklists — "
-                               "VPN ou hotspot avant de log")
-            # The login form fields can have slightly different names
-            # across page revisions — try the obvious selectors first.
+                      timeout=30_000)
+            # Wait for the captcha to resolve + the real form to render
+            try:
+                page.wait_for_selector(
+                    "input[type='password'], input[name='password']",
+                    timeout=60_000)
+            except Exception:
+                # The Cloudflare challenge may take longer or fail
+                pass
+            # Best-effort pre-fill so the user only has to solve the
+            # captcha + click Login.
             for sel in ("input[name='email']",
                          "input[name='username']",
                          "input[type='email']"):
                 try:
-                    page.fill(sel, email, timeout=4000)
+                    page.fill(sel, email, timeout=2000)
                     break
                 except Exception:
                     continue
-            else:
-                return False, "champ email introuvable sur la page login"
             for sel in ("input[name='password']",
                          "input[type='password']"):
                 try:
-                    page.fill(sel, password, timeout=4000)
+                    page.fill(sel, password, timeout=2000)
                     break
                 except Exception:
                     continue
-            else:
-                return False, "champ mot de passe introuvable"
-            for sel in ("button[type='submit']",
-                         "input[type='submit']",
-                         "button:has-text('Login')",
-                         "button:has-text('Sign in')"):
-                try:
-                    page.click(sel, timeout=4000)
-                    break
-                except Exception:
-                    continue
-            else:
-                return False, "bouton submit introuvable"
-            # Wait for nav away from /login or a cookie that indicates
-            # we're logged in.
-            try:
-                page.wait_for_url(
-                    lambda u: "/login" not in u, timeout=15_000)
-            except Exception:
-                # Some sites keep you on /login with an error — check
-                # for an error banner.
-                final_html = page.content()
-                if "wrong" in final_html.lower() or \
-                        "incorrect" in final_html.lower() or \
-                        "invalid" in final_html.lower():
-                    return False, ("identifiants refusés par "
-                                    "1001tracklists")
-                # Fall through — maybe login worked, just no redirect
 
-            _save_auth_state_locked()
-            return True, f"connecté en tant que {email}"
-        except Exception as e:
-            log_warning(f"login_with_credentials failed: {e}")
-            return False, f"erreur login : {str(e)[:80]}"
+            # Wait for the user to actually log in. We detect success
+            # when the URL no longer contains /user/login OR when a
+            # logout link appears on the page.
+            import time as _t
+            t0 = _t.time()
+            while _t.time() - t0 < wait_timeout_s:
+                try:
+                    current_url = page.url or ""
+                    if "/user/login" not in current_url:
+                        break
+                    # Or the page itself renders a logout link
+                    html = page.content() or ""
+                    if "logout" in html.lower() or \
+                            "log out" in html.lower():
+                        break
+                except Exception:
+                    pass
+                _t.sleep(1.0)
+            else:
+                return False, ("timeout — la fenêtre est restée sur "
+                                "/user/login pendant "
+                                f"{wait_timeout_s}s, login pas "
+                                "détecté")
+
+            # Save the storage_state for future runs
+            try:
+                _AUTH_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                ctx.storage_state(path=str(_AUTH_STATE_PATH))
+            except Exception as e:
+                return False, f"sauvegarde cookies failed : {e}"
+            # Reset the cached headless context so the next scrape
+            # reloads the freshly-saved storage_state (with cookies).
+            global _PW_CTX
+            with _PW_LOCK:
+                if _PW_CTX is not None:
+                    try:
+                        _PW_CTX.close()
+                    except Exception:
+                        pass
+                    _PW_CTX = None
+            return True, f"connecté en tant que {email} — cookies sauvés"
         finally:
             try:
                 page.close()
             except Exception:
                 pass
+            try:
+                ctx.close()
+            except Exception:
+                pass
+            try:
+                browser.close()
+            except Exception:
+                pass
+    except Exception as e:
+        log_warning(f"login_with_credentials failed: {e}")
+        return False, f"erreur login : {str(e)[:120]}"
+    finally:
+        try:
+            pw.stop()
+        except Exception:
+            pass
 
 
 def is_logged_in_locked() -> bool:
