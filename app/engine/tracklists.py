@@ -148,11 +148,28 @@ def _get_thread_browser():
     (browser, ctx). Each thread gets its own pair to avoid the
     greenlet-cross-thread errors of the sync API.
 
-    Loads ``data/tracklists_auth_state.json`` if present so any saved
-    login cookies are re-applied at context creation time.
+    Auto-reloads when the on-disk auth state file changes — that lets
+    cookies saved by a successful login in one thread propagate to all
+    other threads the next time they ask for a browser. Without this
+    check, a worker that started BEFORE login keeps its stale (no-
+    cookie) context forever and never benefits from the login.
     """
-    if getattr(_PW_TLS, "ctx", None) is not None:
+    cached_ctx = getattr(_PW_TLS, "ctx", None)
+    cached_auth_mtime = getattr(_PW_TLS, "auth_mtime", -1)
+    current_auth_mtime = -1
+    try:
+        if _AUTH_STATE_PATH.exists():
+            current_auth_mtime = _AUTH_STATE_PATH.stat().st_mtime
+    except Exception:
+        pass
+    # Reuse cache only if (a) it exists, AND (b) the auth file hasn't
+    # changed since we built it.
+    if cached_ctx is not None and cached_auth_mtime == current_auth_mtime:
         return _PW_TLS.browser, _PW_TLS.ctx
+    # Either no cache or stale — rebuild
+    if cached_ctx is not None:
+        _reset_thread_browser()
+
     from playwright.sync_api import sync_playwright
     _PW_TLS.pw = sync_playwright().start()
     _PW_TLS.browser = _PW_TLS.pw.chromium.launch(
@@ -169,10 +186,12 @@ def _get_thread_browser():
             ctx_args["storage_state"] = str(_AUTH_STATE_PATH)
             log_info(
                 f"tracklists: loaded saved login session from "
-                f"{_AUTH_STATE_PATH.name}")
+                f"{_AUTH_STATE_PATH.name} (mtime "
+                f"{current_auth_mtime:.0f})")
         except Exception as e:
             log_warning(f"tracklists: failed to load auth state: {e}")
     _PW_TLS.ctx = _PW_TLS.browser.new_context(**ctx_args)
+    _PW_TLS.auth_mtime = current_auth_mtime
     # Stealth — best-effort
     try:
         from playwright_stealth import Stealth
@@ -224,25 +243,43 @@ def _save_auth_state(ctx) -> None:
 
 def _detect_logged_in(html: str) -> bool:
     """Decide whether an arbitrary 1001tracklists page HTML is being
-    served to a logged-in user. STRICT detection: requires either an
-    explicit logout link OR a profile/account link, AND specifically
-    NOT showing the login icon. We err on the side of saying "no" so
-    we never claim success on a partial state."""
+    served to a logged-in user. STRICT detection: REQUIRES at least
+    one positive signal (logout link) AND REQUIRES the absence of
+    logged-out signals (login icon link, signup link).
+
+    The previous version matched the literal substring ">logout<" or
+    "log out" anywhere in the HTML — that fired false positives on
+    e.g. cookie-banner text mentioning "log out at any time" or
+    user-content tracklist names. We now anchor on the actual href
+    attributes which only appear in the rendered nav for logged-in
+    users.
+    """
     if not html:
         return False
     h = html.lower()
     if _looks_like_ip_ban(h):
         return False
-    # Positive signals — at least one must be present
-    has_logout = ("href=\"/user/logout" in h
-                  or "href='/user/logout" in h
-                  or ">logout<" in h
-                  or ">log out<" in h)
-    # Negative signal — the "join now" / signup CTA is only shown to
-    # logged-out users; its absence is a strong signal.
-    # We don't rely on absence alone (could be a layout glitch), but
-    # combined with logout link presence it's pretty conclusive.
-    return has_logout
+    # ── Positive signals (logged-in nav) ──
+    # The /user/logout href is in the top nav ONLY when authenticated.
+    has_logout_href = ("href=\"/user/logout" in h
+                       or "href='/user/logout" in h)
+    # Some pages put the logout under /logout (older style)
+    has_logout_href2 = ("href=\"/logout\"" in h
+                        or "href='/logout'" in h)
+    pos = has_logout_href or has_logout_href2
+
+    # ── Negative signals (logged-out nav) ──
+    # The signup / login icons only appear for guests.
+    has_login_href = ("href=\"/user/login\"" in h
+                      or "href='/user/login'" in h)
+    has_signup_href = ("href=\"/user/register" in h
+                       or "href='/user/register" in h
+                       or "href=\"/user/signup" in h
+                       or "href='/user/signup" in h)
+    neg = has_login_href or has_signup_href
+
+    # Conclusive: positive signal present AND no negative signal
+    return pos and not neg
 
 
 def login_with_credentials(email: str, password: str,

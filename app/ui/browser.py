@@ -337,7 +337,11 @@ class BrowserPanel(ctk.CTkFrame):
             # stuck at whatever the host's transitional size was — which
             # is what hid the Spotify playback bar.
             self._fit_now()
-            for delay in (50, 200, 600, 1500):
+            # Heavy SPAs like SoundCloud / Spotify keep loading
+            # post-DOMContentLoaded — their bottom playback bar can
+            # materialize 3-5s in. Spread re-fits across the first
+            # 8 s so we catch them no matter when they render.
+            for delay in (50, 200, 600, 1500, 3000, 5000, 8000):
                 self.after(delay, self._fit_now)
             return
 
