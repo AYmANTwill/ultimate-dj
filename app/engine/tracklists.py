@@ -673,45 +673,112 @@ def _parse_html(html: str, *, url: str) -> dict:
     }
 
 
+def _parse_iso_duration(s: str) -> int:
+    """Parse ISO-8601 duration like ``PT6M57S`` into total seconds.
+    Returns 0 on malformed input."""
+    if not s or not s.startswith("PT"):
+        return 0
+    m = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", s)
+    if not m:
+        return 0
+    h, mi, se = m.groups()
+    return int(h or 0) * 3600 + int(mi or 0) * 60 + int(se or 0)
+
+
 def _parse_tracks(soup) -> list[dict]:
-    """Pull the list of tracks from the page.
+    """Pull the list of tracks from a 1001tracklists tracklist page.
 
-    1001tracklists uses container divs like ``<div class="tlpItem ...">``
-    that hold the artist + title via spans like ``.trackFormat`` /
-    nested anchors. We look for the most reliable signals — track name
-    block + the artist link — and accept missing pieces gracefully.
+    Modern 1001tracklists (post-2025 SPA rewrite) embeds each track as
+    a schema.org MusicRecording with the structured data we want
+    directly in ``<meta itemprop="...">`` tags:
 
-    Returns list of {position, artist, title, time, label, raw}.
+        <div class="bCont tl">
+          <div id="tlpN_content" itemprop="tracks" itemscope
+               itemtype="http://schema.org/MusicRecording">
+            <meta itemprop="name"     content="Artist - Title (Remix)">
+            <meta itemprop="byArtist" content="Artist">
+            <meta itemprop="duration" content="PT6M57S">
+            <meta itemprop="genre"    content="Techno">
+            <meta itemprop="url"      content="/track/.../index.html">
+            <meta itemprop="publisher" content="…HTML-encoded label…">
+            <span class="trackValue …">… visible artist + title spans …</span>
+          </div>
+          <div class="iRow grow mediaRow" data-trackid="1082668">…
+          <div class="cue noWrap action mt5">00:11</div>   ← cue time
+        </div>
+
+    This is much more reliable than parsing the visible spans (which
+    have a wrapping-rich structure with nested artist/remix/label
+    anchors). We read the meta tags first, fall back to the visible
+    spans only when meta isn't present (e.g. an unidentified ID
+    placeholder track).
+
+    Returns list of {position, artist, title, time, label, raw,
+                     duration, genre, url, track_id}.
     """
+    from html import unescape
     tracks: list[dict] = []
-    rows = soup.select("div.tlpItem")
+    rows = soup.select("div.bCont.tl")
     for i, row in enumerate(rows, 1):
-        # Skip non-track rows (segue markers, talk breaks, etc.)
-        if "tlpItemNonTrack" in (row.get("class") or []):
+        rec = row.find(attrs={"itemprop": "tracks"})
+        if rec is None:
+            # No schema.org block on this row — likely a "no track"
+            # placeholder header / separator. Skip.
             continue
 
-        text_el = row.select_one(".trackValue") or row.select_one(".tlToogleData")
-        if text_el is None:
-            text_el = row
-        raw = text_el.get_text(" ", strip=True)
-        if not raw:
-            continue
+        def _meta(prop: str) -> str:
+            m = rec.find("meta", attrs={"itemprop": prop})
+            return (m.get("content") or "").strip() if m else ""
 
-        # Heuristic split: "Artist - Title" or "Artist & Other - Title (Label)"
-        # 1001tracklists usually formats with a clean " - " separator.
-        artist = ""
-        title = raw
-        if " - " in raw:
-            artist, _, rest = raw.partition(" - ")
-            title = rest.strip()
+        name = _meta("name")
+        artist = _meta("byArtist")
+        duration_iso = _meta("duration")
+        genre = _meta("genre")
+        track_url = _meta("url")
 
-        # Time-in-set marker (mm:ss) if present
-        t_el = row.select_one(".cueValueField") or row.select_one(".cueValue")
-        time_in = t_el.get_text(strip=True) if t_el else ""
+        if not name and not artist:
+            # ID / unknown track — fall back to visible spans
+            tv = row.select_one(".trackValue")
+            raw = tv.get_text(" ", strip=True) if tv else ""
+            if not raw:
+                continue
+            if " - " in raw:
+                artist, _, title = raw.partition(" - ")
+            else:
+                title = raw
+        else:
+            # Derive title by stripping the leading "artist - " from
+            # the full name. Falls back to the whole name if the
+            # leading-artist convention doesn't match (rare).
+            title = name
+            if artist and name.startswith(artist + " - "):
+                title = name[len(artist) + 3:]
+            raw = name or f"{artist} - {title}".strip(" -")
 
-        # Label / release info, when 1001tracklists includes a tag
-        label_el = row.select_one(".labelValue")
-        label = label_el.get_text(strip=True) if label_el else ""
+        # Cue (timestamp in the set)
+        cue_el = row.select_one("div.cue.noWrap") or row.select_one(".cue")
+        time_in = cue_el.get_text(strip=True) if cue_el else ""
+
+        # Label is HTML-encoded inside the publisher meta — decode +
+        # re-parse to extract the visible text.
+        label = ""
+        publisher_meta = rec.find("meta",
+                                    attrs={"itemprop": "publisher"})
+        if publisher_meta is not None:
+            try:
+                from bs4 import BeautifulSoup as _BS
+                label_html = unescape(publisher_meta.get("content") or "")
+                label_soup = _BS(label_html, "lxml")
+                label = label_soup.get_text(" ", strip=True)
+            except Exception:
+                pass
+
+        # Track ID from the mediaRow's data-trackid attribute (useful
+        # for de-duplicating + linking external metadata later)
+        media_row = row.select_one("div.iRow.grow.mediaRow")
+        track_id = ""
+        if media_row is not None:
+            track_id = media_row.get("data-trackid", "")
 
         tracks.append({
             "position": i,
@@ -719,7 +786,11 @@ def _parse_tracks(soup) -> list[dict]:
             "title":    title.strip(),
             "time":     time_in,
             "label":    label.strip(),
-            "raw":      raw,
+            "raw":      raw.strip(),
+            "duration": _parse_iso_duration(duration_iso),
+            "genre":    genre.strip(),
+            "url":      track_url.strip(),
+            "track_id": track_id,
         })
     return tracks
 
