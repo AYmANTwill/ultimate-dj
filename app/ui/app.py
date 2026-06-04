@@ -133,12 +133,13 @@ class App(ctk.CTk):
         # nothing). Eager + place_forget is one tray construction at
         # boot (~130 ms) but rock-solid afterwards.
         from app.ui.activity_tray import ActivityTray
-        # Parent the tray to `content` (not to the App root) so its
-        # place(x=12, y=12) coordinates are relative to the content area
-        # itself — no more hardcoded sidebar-width offsets that broke
-        # whenever CTk's widget scaling kicked in (the tray ended up
-        # buried INSIDE the sidebar at 125%/150% DPI).
-        self._activity_tray = ActivityTray(self.content)
+        # Status-bar pattern: parent the tray to the App ROOT and tell
+        # it to pack itself `before=self.content` (→ a strip at the
+        # bottom of the content region). Because it's on root, page
+        # switches inside `self.content` can never unpack or bury it.
+        # This replaces the fragile place()/float approach that kept
+        # ending up hidden under CTk's DPI widget scaling.
+        self._activity_tray = ActivityTray(self, pack_before=self.content)
 
         # Global keyboard nav: Ctrl+1..9 → switch to the n-th page in
         # sidebar order, Ctrl+, → Settings (Mac convention).
@@ -301,17 +302,9 @@ class App(ctk.CTk):
         page = self._page_cache[name]
         if hasattr(page, "on_show"):
             page.on_show()
-
-        # Re-lift the floating activity tray above the freshly-packed
-        # page so it stays visible when switching tabs. Without this,
-        # the new page's widgets stack above the tray (Tk's
-        # creation-order rule) and the tray is hidden until the next
-        # task event triggers _show() → lift() in the tray itself.
-        try:
-            if getattr(self, "_activity_tray", None) is not None:
-                self._activity_tray.lift()
-        except Exception:
-            pass
+        # No tray re-lift needed: the tray lives on the App root and is
+        # packed before `content`, so switching pages inside `content`
+        # never touches it.
 
     def reload_theme(self):
         """Apply the theme live: rebuild sidebar + active page only.

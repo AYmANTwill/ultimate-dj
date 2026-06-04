@@ -29,7 +29,9 @@ from app.engine import tasks as task_registry
 
 _TRAY_W = 360
 _ROW_H = 56
-_MAX_VISIBLE = 5
+# Bottom status bar — keep it compact. Show at most 3 task rows; any
+# extra collapse into a "+N autres…" line.
+_MAX_VISIBLE = 3
 
 
 def _fmt_eta(seconds: Optional[float]) -> str:
@@ -56,14 +58,27 @@ def _color_for(status: str) -> str:
 
 
 class ActivityTray(ctk.CTkFrame):
-    """Floating activity panel. Mount once on the App window."""
+    """Activity status bar — docks at the bottom of the content area.
 
-    def __init__(self, parent):
+    Mounted on the App ROOT window (not inside the page-swapping
+    content frame) and packed with ``side="bottom", before=<content>``.
+    This is the canonical Tk status-bar pattern: because it lives on
+    root and root's pack order never changes (sidebar / content are
+    packed once at startup), page switches inside ``content`` can NEVER
+    unpack, hide, or bury it. No ``place()``, no DPI math, no z-order
+    fights — it just works, the way every IDE's status bar does.
+
+    Pass ``pack_before`` = the content frame so the bar is inserted in
+    root's pack order right before it (→ bar takes a strip at the
+    bottom of the content region, content fills the rest above).
+    """
+
+    def __init__(self, parent, *, pack_before=None):
         super().__init__(parent, fg_color=COLORS["bg_card"],
-                          corner_radius=10,
-                          border_width=1,
-                          border_color=COLORS["bg_input"])
+                          corner_radius=0,
+                          border_width=0)
         self._parent = parent
+        self._pack_before = pack_before
         self._row_widgets: dict[int, ctk.CTkFrame] = {}
         self._build()
         # Subscribe — task_registry calls back from worker threads, so
@@ -216,37 +231,23 @@ class ActivityTray(ctk.CTkFrame):
     # ── Show / hide ───────────────────────────────────────────
 
     def _show(self):
-        # Dock as a packed strip at the top of the content area instead
-        # of float-via-place. place() was fragile under CTk's widget
-        # scaling — at 125 % / 150 % DPI the tray landed inside the
-        # sidebar and was invisible. A pack(side="top") at the content
-        # area's top edge always reserves real layout space, can't be
-        # buried, and works the same across every DPI / theme.
+        # Dock at the bottom of the content region. Packed on the App
+        # root (our parent) with side="bottom". `before=content` keeps
+        # us ordered ahead of the content frame so we claim the bottom
+        # strip and content fills the area above us. Idempotent: pack()
+        # on an already-packed widget is a no-op reflow.
+        if self.winfo_manager() == "pack":
+            return    # already shown
         try:
-            self.pack(side="top", fill="x", padx=12, pady=(12, 0),
-                      before=self._sibling_to_pack_before())
-            self.lift()
+            kw = dict(side="bottom", fill="x")
+            if self._pack_before is not None:
+                kw["before"] = self._pack_before
+            self.pack(**kw)
         except Exception:
             try:
-                # Fallback: just pack at top without before-anchor
-                self.pack(side="top", fill="x", padx=12, pady=(12, 0))
-                self.lift()
+                self.pack(side="bottom", fill="x")
             except Exception:
                 pass
-
-    def _sibling_to_pack_before(self):
-        """Return the first existing page-frame child of our parent
-        (the content frame), so pack(before=...) puts the tray ABOVE
-        any currently-mounted page. Falls back to None which packs
-        at the bottom of the parent's children."""
-        try:
-            for child in self._parent.winfo_children():
-                if child is self:
-                    continue
-                return child
-        except Exception:
-            pass
-        return None
 
     def _hide(self):
         try:

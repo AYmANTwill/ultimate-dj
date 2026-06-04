@@ -625,6 +625,27 @@ class SettingsPage(ctk.CTkFrame):
             text_color=COLORS["text"],
         ).pack(side="left")
 
+        # Disk usage + cleanup row — the FMA download is ~7 GB zip +
+        # ~4 GB extracted. In embeddings_only mode the import auto-
+        # cleans after success, but a half-finished or keep_audio run
+        # leaves the files on disk. This button nukes them on demand.
+        fma_disk_row = ctk.CTkFrame(pipe_card, fg_color="transparent")
+        fma_disk_row.pack(fill="x", padx=12, pady=(0, 6))
+        self._fma_disk_label = ctk.CTkLabel(
+            fma_disk_row, text="FMA disque : —",
+            font=ctk.CTkFont(size=10), text_color=COLORS["text_dim"],
+            anchor="w")
+        self._fma_disk_label.pack(side="left", fill="x", expand=True)
+        self._fma_cleanup_btn = ctk.CTkButton(
+            fma_disk_row, text="Nettoyer FMA (libère le disque)",
+            width=230, height=26, font=ctk.CTkFont(size=10),
+            fg_color=COLORS["bg_input"], hover_color=COLORS["warning"],
+            text_color=COLORS["text"],
+            command=self._run_fma_cleanup,
+        )
+        self._fma_cleanup_btn.pack(side="left", padx=(8, 0))
+        self.after_idle(self._refresh_fma_disk)
+
         # Inline progress UI for FMA (download + analyze phases)
         (self._fma_prog_frame,
          self._fma_prog_bar,
@@ -1462,6 +1483,73 @@ class SettingsPage(ctk.CTkFrame):
 
         threading.Thread(target=work, daemon=True,
                           name="enrich-corpus").start()
+
+    def _refresh_fma_disk(self):
+        """Show how much disk the FMA dataset currently occupies."""
+        import threading
+
+        def work():
+            try:
+                from app.engine import fma
+                u = fma.disk_usage()
+                total = sum(u.values())
+                if total == 0:
+                    txt = "FMA disque : rien (pas téléchargé)"
+                    color = COLORS["text_dim"]
+                else:
+                    txt = (f"FMA disque : {total/1024**3:.1f} GB  "
+                           f"(zip {u['zip']/1024**3:.1f} + extrait "
+                           f"{u['extracted']/1024**3:.1f})")
+                    color = COLORS["warning"]
+                self.after(0, lambda t=txt, c=color:
+                            self._fma_disk_label.configure(
+                                text=t, text_color=c))
+            except Exception:
+                pass
+
+        threading.Thread(target=work, daemon=True,
+                          name="fma-disk").start()
+
+    def _run_fma_cleanup(self):
+        """Delete the FMA zip + extracted MP3s. Embeddings already in
+        the DB are NOT affected (they're stored separately). Frees up
+        to ~11 GB."""
+        from tkinter import messagebox
+        if not messagebox.askyesno(
+                "Nettoyer FMA ?",
+                "Supprime data/fma/ (zip ~7 GB + MP3 extraits ~4 GB). "
+                "Les embeddings déjà calculés et stockés en DB sont "
+                "conservés — seul l'audio brut est effacé. Tu devras "
+                "re-télécharger si tu veux ré-importer plus tard. "
+                "Continuer ?"):
+            return
+
+        self._fma_cleanup_btn.configure(state="disabled",
+                                         text="Nettoyage…")
+
+        import threading
+
+        def work():
+            try:
+                from app.engine import fma
+                freed_z = fma.cleanup_zip()
+                freed_e = fma.cleanup_extracted()
+                freed = (freed_z + freed_e) / 1024**3
+                self.after(0, lambda f=freed:
+                            self._fma_disk_label.configure(
+                                text=f"FMA nettoyé — {f:.1f} GB libérés",
+                                text_color=COLORS["success"]))
+            except Exception as e:
+                from app.logger import log_error
+                log_error("fma cleanup failed", e)
+            finally:
+                self.after(0, lambda: self._fma_cleanup_btn.configure(
+                    state="normal",
+                    text="Nettoyer FMA (libère le disque)"))
+                self.after(500, self._refresh_fma_disk)
+
+        threading.Thread(target=work, daemon=True,
+                          name="fma-cleanup").start()
 
     def _run_fma_import(self):
         """Download + extract FMA Small, then run analyse + embed for
