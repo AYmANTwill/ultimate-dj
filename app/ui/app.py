@@ -302,6 +302,17 @@ class App(ctk.CTk):
         if hasattr(page, "on_show"):
             page.on_show()
 
+        # Re-lift the floating activity tray above the freshly-packed
+        # page so it stays visible when switching tabs. Without this,
+        # the new page's widgets stack above the tray (Tk's
+        # creation-order rule) and the tray is hidden until the next
+        # task event triggers _show() → lift() in the tray itself.
+        try:
+            if getattr(self, "_activity_tray", None) is not None:
+                self._activity_tray.lift()
+        except Exception:
+            pass
+
     def reload_theme(self):
         """Apply the theme live: rebuild sidebar + active page only.
 
