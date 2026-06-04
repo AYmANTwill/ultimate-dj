@@ -216,11 +216,12 @@ class ActivityTray(ctk.CTkFrame):
     # ── Show / hide ───────────────────────────────────────────
 
     def _show(self):
-        # Sticky position: top-left of the main window, just below the
-        # sidebar header. Re-place every time so a window resize moves
-        # the sidebar correctly.
+        # Sticky position: top-left of the content area. We're parented
+        # to App.content (not App root), so x=12 is 12 px past the
+        # sidebar edge regardless of DPI scaling — no more hardcoded
+        # 210/224 px offsets that broke on 125 % CTk scaling.
         try:
-            self.place(x=224, y=12, width=_TRAY_W)
+            self.place(x=12, y=12, width=_TRAY_W)
             # Without lift() the tray is created BELOW the pages that
             # were packed earlier in App.__init__ — Tk's default
             # stacking order is creation-order, not z-index. lift()

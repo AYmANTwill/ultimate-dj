@@ -133,7 +133,12 @@ class App(ctk.CTk):
         # nothing). Eager + place_forget is one tray construction at
         # boot (~130 ms) but rock-solid afterwards.
         from app.ui.activity_tray import ActivityTray
-        self._activity_tray = ActivityTray(self)
+        # Parent the tray to `content` (not to the App root) so its
+        # place(x=12, y=12) coordinates are relative to the content area
+        # itself — no more hardcoded sidebar-width offsets that broke
+        # whenever CTk's widget scaling kicked in (the tray ended up
+        # buried INSIDE the sidebar at 125%/150% DPI).
+        self._activity_tray = ActivityTray(self.content)
 
         # Global keyboard nav: Ctrl+1..9 → switch to the n-th page in
         # sidebar order, Ctrl+, → Settings (Mac convention).
