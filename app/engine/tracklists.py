@@ -482,9 +482,17 @@ def logout_and_clear_session() -> None:
 
 def _playwright_get_html(url: str, *,
                            wait_for_selector: str = "a[href*='/tracklist/']",
-                           timeout_ms: int = 25_000) -> str | None:
+                           timeout_ms: int = 25_000,
+                           settle_ms: int = 0) -> str | None:
     """Open `url` in THIS THREAD's stealthed headless Chromium, wait
     for content to render, return the post-JS DOM. None on failure.
+
+    ``settle_ms`` adds an extra fixed wait AFTER the selector appears —
+    1001tracklists is a SPA that hydrates the track rows progressively,
+    so the first DOM snapshot right after wait_for_selector often has
+    the nav links but NOT all the track <div class="bCont tl"> blocks
+    yet. A short settle (1-2 s) lets them finish populating before we
+    grab page.content().
 
     Persistent auth state: when the user has logged in at least once
     via ``login_with_credentials``, the saved session cookies are
@@ -510,6 +518,11 @@ def _playwright_get_html(url: str, *,
                 # Selector didn't appear — return the DOM anyway, the
                 # caller may still want to inspect it.
                 pass
+            if settle_ms > 0:
+                try:
+                    page.wait_for_timeout(settle_ms)
+                except Exception:
+                    pass
             html = page.content()
             return html
         finally:
@@ -589,34 +602,43 @@ def fetch_tracklist(url: str, *, use_cache: bool = True) -> dict:
         except Exception:
             pass    # fall through and refetch
 
-    # Try the cheap path first (cloudscraper) — it occasionally works
-    # for cached / static responses. We immediately detect the
-    # JS-shell case and escalate to playwright when needed.
+    # ALWAYS use playwright for tracklist detail pages. cloudscraper
+    # can't execute JS, and 1001tracklists hydrates the track rows
+    # (div.bCont.tl) client-side — so a cloudscraper response has the
+    # nav/meta (which contains "tracklist/" links, fooling the
+    # js-shell check) but ZERO actual tracks. We were silently parsing
+    # that empty static HTML and reporting "0 tracks". Playwright with
+    # the right selector + settle is the only path that works.
     html: str | None = None
-    sc = _scraper()
-    if sc is not None:
-        _wait_polite()
-        headers = {"User-Agent":
-                    _USER_AGENTS[int(time.time()) % len(_USER_AGENTS)]}
-        try:
-            resp = sc.get(url, headers=headers, timeout=30)
-            if resp.status_code in (200, 206):
-                html = resp.text
-        except Exception as e:
-            log_warning(f"cloudscraper failed for {url}: {e}")
+    if _playwright_available():
+        log_info(f"fetch_tracklist: playwright fetch {url}")
+        # Wait for the ACTUAL track container (div.bCont.tl), not just
+        # any tracklist link. settle 2 s so all rows finish populating
+        # before we snapshot the DOM.
+        html = _playwright_get_html(
+            url, wait_for_selector="div.bCont.tl",
+            settle_ms=2000)
 
-    # If cloudscraper got nothing useful, escalate to playwright.
-    if html is None or _looks_like_js_shell(html):
-        if not _playwright_available():
-            raise RuntimeError(
-                "playwright not installed and cloudscraper returned a "
-                "JS shell — pip install playwright && playwright install "
-                "chromium to fix 1001tracklists scraping")
-        log_info(f"fetch_tracklist: escalating to playwright for {url}")
-        html = _playwright_get_html(url)
-        if html is None:
-            raise RuntimeError(
-                f"playwright fetch failed for {url}")
+    # Fallback to cloudscraper only if playwright is unavailable — it
+    # won't have hydrated tracks but at least lets us detect IP bans /
+    # cache hits.
+    if html is None:
+        sc = _scraper()
+        if sc is not None:
+            _wait_polite()
+            headers = {"User-Agent":
+                        _USER_AGENTS[int(time.time()) % len(_USER_AGENTS)]}
+            try:
+                resp = sc.get(url, headers=headers, timeout=30)
+                if resp.status_code in (200, 206):
+                    html = resp.text
+            except Exception as e:
+                log_warning(f"cloudscraper failed for {url}: {e}")
+
+    if html is None:
+        raise RuntimeError(
+            f"could not fetch {url} (playwright + cloudscraper both "
+            "failed) — check network / login")
 
     if _looks_like_ip_ban(html):
         raise IPLimitedError(
