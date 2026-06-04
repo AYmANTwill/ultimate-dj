@@ -216,24 +216,41 @@ class ActivityTray(ctk.CTkFrame):
     # ── Show / hide ───────────────────────────────────────────
 
     def _show(self):
-        # Sticky position: top-left of the content area. We're parented
-        # to App.content (not App root), so x=12 is 12 px past the
-        # sidebar edge regardless of DPI scaling — no more hardcoded
-        # 210/224 px offsets that broke on 125 % CTk scaling.
+        # Dock as a packed strip at the top of the content area instead
+        # of float-via-place. place() was fragile under CTk's widget
+        # scaling — at 125 % / 150 % DPI the tray landed inside the
+        # sidebar and was invisible. A pack(side="top") at the content
+        # area's top edge always reserves real layout space, can't be
+        # buried, and works the same across every DPI / theme.
         try:
-            self.place(x=12, y=12, width=_TRAY_W)
-            # Without lift() the tray is created BELOW the pages that
-            # were packed earlier in App.__init__ — Tk's default
-            # stacking order is creation-order, not z-index. lift()
-            # raises us to the top so the floating panel actually
-            # floats over whichever page is currently mounted.
+            self.pack(side="top", fill="x", padx=12, pady=(12, 0),
+                      before=self._sibling_to_pack_before())
             self.lift()
         except Exception:
+            try:
+                # Fallback: just pack at top without before-anchor
+                self.pack(side="top", fill="x", padx=12, pady=(12, 0))
+                self.lift()
+            except Exception:
+                pass
+
+    def _sibling_to_pack_before(self):
+        """Return the first existing page-frame child of our parent
+        (the content frame), so pack(before=...) puts the tray ABOVE
+        any currently-mounted page. Falls back to None which packs
+        at the bottom of the parent's children."""
+        try:
+            for child in self._parent.winfo_children():
+                if child is self:
+                    continue
+                return child
+        except Exception:
             pass
+        return None
 
     def _hide(self):
         try:
-            self.place_forget()
+            self.pack_forget()
         except Exception:
             pass
 

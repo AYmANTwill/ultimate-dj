@@ -279,6 +279,20 @@ def import_into_db(*, mode: str = "embeddings_only",
         on_progress=on_progress,
         stop_event=stop_event,
     )
+
+    # Auto-cleanup after a fully successful import: the source ZIP
+    # alone is ~7 GB. In embeddings_only mode the extracted MP3s
+    # also get individually deleted by analyze_into_db, but we still
+    # need to nuke the fma_small/ extract directory (now empty) and
+    # the zip itself.
+    if analyzed > 0 and analyzed >= len(todo) - 1 and \
+            mode == "embeddings_only":
+        try:
+            cleanup_extracted()
+            cleanup_zip()
+        except Exception as e:
+            log_warning(f"fma post-import cleanup failed: {e}")
+
     return {
         "analyzed": analyzed,
         "failed": len(todo) - analyzed,
@@ -287,15 +301,65 @@ def import_into_db(*, mode: str = "embeddings_only",
     }
 
 
-def cleanup_zip() -> bool:
+def cleanup_zip() -> int:
     """Delete the downloaded zip(s) once extraction succeeded. Saves
-    ~7 GB. Safe to call after import_into_db has run successfully."""
-    deleted = 0
+    ~7 GB. Returns the number of bytes freed."""
+    freed = 0
     for p in (_FMA_ZIP_PATH, _FMA_META_ZIP_PATH):
         if p.exists():
             try:
+                sz = p.stat().st_size
                 p.unlink()
-                deleted += 1
+                freed += sz
+                log_info(f"fma.cleanup_zip: deleted {p.name} "
+                          f"({sz/1024**2:.0f} MB)")
             except Exception as e:
                 log_warning(f"fma.cleanup_zip: couldn't delete {p}: {e}")
-    return deleted > 0
+    return freed
+
+
+def cleanup_extracted() -> int:
+    """Delete the extracted fma_small/ directory (the per-track MP3s).
+    Safe in embeddings_only mode: the DB still holds the 256-d vectors
+    + scalar features for every track, training works without the
+    audio. Returns bytes freed."""
+    freed = 0
+    if not _FMA_AUDIO_DIR.exists():
+        return 0
+    try:
+        for f in _FMA_AUDIO_DIR.rglob("*"):
+            try:
+                if f.is_file():
+                    freed += f.stat().st_size
+            except OSError:
+                pass
+        shutil.rmtree(_FMA_AUDIO_DIR, ignore_errors=True)
+        log_info(f"fma.cleanup_extracted: removed fma_small/ "
+                  f"({freed/1024**3:.2f} GB)")
+    except Exception as e:
+        log_warning(f"fma.cleanup_extracted: {e}")
+    return freed
+
+
+def disk_usage() -> dict:
+    """How much disk the FMA dataset is currently using. Useful for a
+    Settings status line + cleanup button."""
+    def _dir_size(p: Path) -> int:
+        if not p.exists():
+            return 0
+        total = 0
+        for f in p.rglob("*"):
+            try:
+                if f.is_file():
+                    total += f.stat().st_size
+            except OSError:
+                pass
+        return total
+    return {
+        "zip":       _FMA_ZIP_PATH.stat().st_size
+                     if _FMA_ZIP_PATH.exists() else 0,
+        "meta_zip":  _FMA_META_ZIP_PATH.stat().st_size
+                     if _FMA_META_ZIP_PATH.exists() else 0,
+        "extracted": _dir_size(_FMA_AUDIO_DIR),
+        "metadata":  _dir_size(_FMA_METADATA_DIR),
+    }
