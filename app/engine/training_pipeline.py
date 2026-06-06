@@ -236,21 +236,52 @@ def analyze_into_db(paths: list[str], *, source: str = "training",
 
     conn = library.get_connection()
     done = 0
+    audio_dups = 0
     total = len(paths)
     for i, path in enumerate(paths, 1):
         if stop_event is not None and stop_event.is_set():
             break
         try:
+            # Embed FIRST so we can audio-dedup before committing a row.
+            try:
+                vec = embeddings.embed(path)
+            except Exception as e:
+                log_warning(f"embed failed for {path}: {e}")
+                vec = None
+
+            # ── Audio-coupled matching ───────────────────────────
+            # If this downloaded track's fingerprint matches an
+            # existing USER track ≥ 0.92 cosine, the name matcher just
+            # missed it — it's a track the user already owns. Don't
+            # store a redundant corpus copy; drop the file and move on.
+            if vec is not None:
+                dup_path, dup_score = library.find_audio_duplicate(
+                    conn, vec, threshold=0.92, source="user")
+                if dup_path is not None:
+                    audio_dups += 1
+                    log_info(
+                        f"audio-dedup: {Path(path).name} ≈ "
+                        f"{Path(dup_path).name} (cos {dup_score}) — "
+                        f"skipping redundant corpus copy")
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+                    if on_progress:
+                        try:
+                            on_progress(i, total, "dup",
+                                         f"{Path(path).name[:40]} "
+                                         f"≈ lib")
+                        except Exception:
+                            pass
+                    continue
+
             info = analyze_track(path)
             info["source"] = source
             library.upsert_track(conn, info)
-            # Compute + store embedding (separate step in current API)
-            try:
-                vec = embeddings.embed(path)
+            if vec is not None:
                 library.set_embedding(
                     conn, path, vec, backend=embeddings.best_backend())
-            except Exception as e:
-                log_warning(f"embed failed for {path}: {e}")
             if mode == "embeddings_only":
                 try:
                     os.remove(path)
@@ -275,7 +306,8 @@ def analyze_into_db(paths: list[str], *, source: str = "training",
                                  f"{Path(path).name[:40]} — {str(e)[:40]}")
                 except Exception:
                     pass
-    log_info(f"analyze_into_db: {done}/{total} stored as source={source}")
+    log_info(f"analyze_into_db: {done}/{total} stored as source={source} "
+             f"({audio_dups} audio-dups skipped)")
     return done
 
 

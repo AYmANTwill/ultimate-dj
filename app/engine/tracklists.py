@@ -823,6 +823,10 @@ def _normalise(s: str) -> str:
     s = (s or "").lower()
     s = re.sub(r"\(.*?\)|\[.*?\]", " ", s)        # drop parenthetical info
     s = re.sub(r"feat\.?|ft\.?|vs\.?", " ", s)    # drop feat/vs markers
+    # Common remix/edit noise words that don't help identity matching
+    s = re.sub(r"\b(original|extended|radio|club|mix|edit|remix|"
+               r"version|bootleg|rework|vip|dub|instrumental)\b",
+               " ", s)
     s = re.sub(r"[^a-z0-9]+", " ", s)
     return " ".join(s.split())
 
@@ -834,29 +838,113 @@ def _ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _token_sort_ratio(a: str, b: str) -> float:
+    """Word-order-INSENSITIVE ratio: sort the tokens of each string
+    before comparing. "carl cox homicide" vs "homicide carl cox" →
+    both sort to "carl cox homicide" → 1.0 instead of a low score."""
+    ta = " ".join(sorted(a.split()))
+    tb = " ".join(sorted(b.split()))
+    return _ratio(ta, tb)
+
+
+def _split_artist_title(s: str) -> tuple[str, str]:
+    """Split a 'Artist - Title' string on the first ' - '. Returns
+    (artist, title); artist='' if no separator."""
+    if " - " in s:
+        a, _, t = s.partition(" - ")
+        return a.strip(), t.strip()
+    return "", s.strip()
+
+
+def _is_id_placeholder(artist: str, title: str) -> bool:
+    """1001tracklists uses 'ID' (or 'ID - ID') for tracks the
+    community hasn't identified yet. These must NEVER match a real
+    library track — they carry no identity. Also reject empty/1-char
+    fragments that match everything."""
+    a = (artist or "").strip().lower()
+    t = (title or "").strip().lower()
+    if a in ("id", "") and t in ("id", ""):
+        return True
+    if t == "id" or a == "id":
+        return True
+    # Too short to be a meaningful identity (e.g. a stray "x")
+    if len(_normalise(f"{artist} {title}")) < 4:
+        return True
+    return False
+
+
+def name_match_score(scr_artist: str, scr_title: str,
+                      lib_title: str) -> float:
+    """PRECISION-first name similarity in [0,1] between a scraped track
+    and a library track's stored title.
+
+    A false cooccurrence pair teaches the model a transition that never
+    happened — strictly worse than a missing pair. So this scorer is
+    tuned for FEW false positives:
+
+      - Primary metric = token_SORT of the full "artist title" strings.
+        token_sort is word-order-insensitive but still requires MOST
+        tokens to line up (extra/missing words drag it down) — unlike
+        token_set which isolates the intersection and over-fires on a
+        single shared word like "you" or "gucci".
+      - A separate artist+title path can only LIFT the score when BOTH
+        the artist AND the title independently clear strict bars
+        (artist ≥ 0.6, title ≥ 0.8). This rescues "A & B - T" vs
+        "B - T" style real matches without rewarding title-only or
+        artist-only coincidences.
+    """
+    scr_full = _normalise(f"{scr_artist} {scr_title}")
+    lib_full = _normalise(lib_title)
+    if not scr_full or not lib_full:
+        return 0.0
+
+    # Primary: strict, order-insensitive full-string comparison
+    score = _token_sort_ratio(scr_full, lib_full)
+
+    # Secondary: independent artist + title, both must be strong
+    lib_art_raw, lib_tit_raw = _split_artist_title(lib_title)
+    if lib_art_raw and lib_tit_raw:
+        n_scr_art = _normalise(scr_artist)
+        n_scr_tit = _normalise(scr_title)
+        n_lib_art = _normalise(lib_art_raw)
+        n_lib_tit = _normalise(lib_tit_raw)
+        if n_scr_art and n_scr_tit and n_lib_art and n_lib_tit:
+            a = _token_sort_ratio(n_scr_art, n_lib_art)
+            t = _token_sort_ratio(n_scr_tit, n_lib_tit)
+            if a >= 0.6 and t >= 0.8:
+                score = max(score, 0.45 * a + 0.55 * t)
+    return score
+
+
 def match_with_library(tl: dict, conn,
-                        threshold: float = 0.72) -> list[dict]:
+                        threshold: float = 0.80) -> list[dict]:
     """For each scraped track, find the best match in the local DB.
 
     Returns a list of dicts:
         {position, scraped, match (track or None), score}
 
-    The match.score is a fuzzy ratio in [0,1]; entries below `threshold`
-    have match=None. Use this for Phase 4 recommendations (boost local
-    tracks that show up in many scraped sets).
+    Precision-first: ``name_match_score`` is strict (token-sort based),
+    ID/placeholder tracks are excluded entirely, and the default
+    ``threshold`` is 0.80 — a false cooccurrence pair is worse for the
+    model than a missing one.
     """
     rows = conn.execute(
-        "SELECT path, title FROM tracks").fetchall()
-    library = [(r["path"], _normalise(r["title"]),
-                  r["title"] or "")
-               for r in rows]
+        "SELECT path, title FROM tracks "
+        "WHERE COALESCE(source,'user') = 'user'").fetchall()
+    library = [(r["path"], r["title"] or "") for r in rows]
 
     out = []
     for s in tl.get("tracks", []):
-        needle = _normalise(f"{s.get('artist','')} {s.get('title','')}")
+        scr_artist = s.get("artist", "")
+        scr_title = s.get("title", "")
+        # Unidentified / placeholder tracks can't match anything
+        if _is_id_placeholder(scr_artist, scr_title):
+            out.append({"position": s.get("position"), "scraped": s,
+                         "match": None, "score": 0.0})
+            continue
         best = (None, 0.0)
-        for path, norm_title, raw_title in library:
-            score = _ratio(needle, norm_title)
+        for path, raw_title in library:
+            score = name_match_score(scr_artist, scr_title, raw_title)
             if score > best[1]:
                 best = ((path, raw_title), score)
         match = None

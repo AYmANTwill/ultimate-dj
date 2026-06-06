@@ -487,6 +487,52 @@ def get_embedding(track: dict):
     return from_blob(track.get("embedding"))
 
 
+def find_audio_duplicate(conn: sqlite3.Connection, vec,
+                          *, threshold: float = 0.92,
+                          source: str = "user") -> tuple[str | None, float]:
+    """Audio-coupled matching: find the existing track whose stored
+    embedding is most cosine-similar to `vec`, and return (path, score)
+    if that similarity ≥ threshold, else (None, 0.0).
+
+    This is the audio half of the hybrid matcher. When name matching
+    fails to link a scraped track to the library (typo, word order,
+    stored without artist), we download the track, embed it, and call
+    this — if the audio fingerprint matches an existing track ≥ 0.92
+    cosine, it IS that track (the name just didn't line up). Catches
+    real matches the string matcher missed, and prevents storing a
+    redundant corpus copy of something the user already owns.
+
+    `source` filters which rows to compare against ('user' to dedup
+    against the user's real library; pass None to scan everything).
+    """
+    from app.engine.embeddings import from_blob, cosine
+    if vec is None:
+        return (None, 0.0)
+    if source is None:
+        rows = conn.execute(
+            "SELECT path, embedding FROM tracks "
+            "WHERE embedding IS NOT NULL").fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT path, embedding FROM tracks "
+            "WHERE embedding IS NOT NULL "
+            "AND COALESCE(source,'user') = ?", (source,)).fetchall()
+    best_path, best_score = None, 0.0
+    for r in rows:
+        emb = from_blob(r["embedding"])
+        if emb is None or emb.size != vec.size:
+            continue
+        try:
+            s = cosine(vec, emb)
+        except Exception:
+            continue
+        if s > best_score:
+            best_path, best_score = r["path"], s
+    if best_path is not None and best_score >= threshold:
+        return (best_path, round(float(best_score), 4))
+    return (None, 0.0)
+
+
 def tracks_without_embedding(conn: sqlite3.Connection,
                               limit: int | None = None) -> list[dict]:
     """Tracks that haven't been encoded yet. Used by the bulk encoder."""
