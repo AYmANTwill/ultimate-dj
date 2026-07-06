@@ -483,12 +483,14 @@ def set_embedding(conn: sqlite3.Connection, path: str,
     """Persist an audio embedding for a track. `vec` is a numpy float32
     array; we store the raw bytes + backend name so the next sync knows
     what produced it."""
-    from app.engine.embeddings import to_blob
+    from app.engine.embeddings import (invalidate_similarity_calibration,
+                                        to_blob)
     blob = to_blob(vec)
     conn.execute(
         "UPDATE tracks SET embedding = ?, embedding_backend = ? "
         "WHERE path = ?", (blob, backend, path))
     conn.commit()
+    invalidate_similarity_calibration()
 
 
 def get_embedding(track: dict):
@@ -1115,11 +1117,11 @@ def transition_score(track_a: dict, track_b: dict) -> float:
     has_emb = emb_a is not None and emb_b is not None
     audio_sim = 0.0
     if has_emb:
-        from app.engine.embeddings import cosine
-        # Map cosine [-1, 1] to [0, 100]; 0 sim → 50, perfect → 100,
-        # opposite → 0. Most music pairs land in [0.3, 0.95].
+        from app.engine.embeddings import (calibrate_similarity, cosine,
+                                            similarity_score)
         c = cosine(emb_a, emb_b)
-        audio_sim = max(0.0, min(100.0, (c + 1.0) * 50.0))
+        audio_sim = similarity_score(
+            c, calibrate_similarity(_thread_conn()))
 
     if has_emb:
         base = (key * 0.40
@@ -1258,10 +1260,12 @@ def transition_score_breakdown(track_a: dict, track_b: dict) -> dict:
     emb_b = get_embedding(track_b)
     has_emb = emb_a is not None and emb_b is not None
     if has_emb:
-        from app.engine.embeddings import cosine
+        from app.engine.embeddings import (calibrate_similarity, cosine,
+                                            similarity_score)
         c = cosine(emb_a, emb_b)
-        audio_sim = max(0.0, min(100.0, (c + 1.0) * 50.0))
-        audio_label = f"cosine {c:.2f}"
+        audio_sim = similarity_score(
+            c, calibrate_similarity(_thread_conn()))
+        audio_label = f"cosine {c:.2f} → {audio_sim:.0f} calibré"
         weights = {"key": 0.40, "bpm": 0.30, "energy": 0.10, "audio": 0.20}
     else:
         audio_sim = 0.0

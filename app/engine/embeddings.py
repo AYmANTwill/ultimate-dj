@@ -367,3 +367,58 @@ def from_blob(blob: bytes | None) -> np.ndarray | None:
         log_warning(f"embeddings.from_blob: corrupt BLOB "
                     f"({len(blob)} bytes): {e}")
         return None
+
+
+# ── Similarity calibration ───────────────────────────────────────
+# The lite backend clusters ALL dance tracks near cosine 1.0 (measured
+# 2026-07-06 on the real library: mean 0.971, p5 0.886 between RANDOM
+# pairs). The absolute (cos+1)*50 mapping therefore returns 95-100 for
+# every pair — the 20 %-weight audio axis of transition_score was a
+# near-constant, not a discriminator. Calibrating against the library's
+# OWN pairwise distribution (p5 → 0, p95 → 100) restores contrast
+# without changing backend.
+
+_SIM_CAL: tuple[float, float] | None = None
+_SIM_CAL_LEGACY = (-1.0, 1.0)
+_SIM_CAL_MIN_VECS = 50
+
+
+def calibrate_similarity(conn, *, sample_pairs: int = 500) -> tuple[float, float]:
+    """(lo, hi) cosine anchors from the library's user tracks. Cached
+    per process; invalidated whenever an embedding is (re)written.
+    Falls back to the legacy absolute mapping below _SIM_CAL_MIN_VECS."""
+    global _SIM_CAL
+    if _SIM_CAL is not None:
+        return _SIM_CAL
+    import random
+    try:
+        rows = conn.execute(
+            "SELECT embedding FROM tracks WHERE embedding IS NOT NULL "
+            "AND COALESCE(source,'user') = 'user'").fetchall()
+    except Exception:
+        return _SIM_CAL_LEGACY
+    vecs = [v for v in (from_blob(r["embedding"]) for r in rows)
+            if v is not None]
+    if len(vecs) < _SIM_CAL_MIN_VECS:
+        _SIM_CAL = _SIM_CAL_LEGACY
+        return _SIM_CAL
+    rng = random.Random(1234)
+    sims = sorted(
+        cosine(*rng.sample(vecs, 2)) for _ in range(sample_pairs))
+    lo = sims[int(0.05 * len(sims))]
+    hi = sims[int(0.95 * len(sims))]
+    _SIM_CAL = _SIM_CAL_LEGACY if hi - lo < 1e-6 else (lo, hi)
+    return _SIM_CAL
+
+
+def invalidate_similarity_calibration() -> None:
+    global _SIM_CAL
+    _SIM_CAL = None
+
+
+def similarity_score(c: float, cal: tuple[float, float]) -> float:
+    """Map a raw cosine to 0-100 using the calibration anchors."""
+    lo, hi = cal
+    if cal == _SIM_CAL_LEGACY:
+        return max(0.0, min(100.0, (c + 1.0) * 50.0))
+    return max(0.0, min(100.0, (c - lo) / (hi - lo) * 100.0))

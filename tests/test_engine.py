@@ -482,6 +482,30 @@ def test_write_m3u_orders_entries(tmp_path):
     assert refs == ["First Track.mp3", "Second Track.mp3"]
 
 
+def test_similarity_score_calibrated_and_legacy():
+    """L1 was saturated (lite cosines ~0.97 between random tracks):
+    calibrated mapping must spread p5..p95 onto 0..100; the legacy
+    sentinel keeps the old absolute mapping for tiny libraries."""
+    from app.engine import embeddings as em
+    cal = (0.88, 0.99)
+    assert em.similarity_score(0.88, cal) == 0.0
+    assert em.similarity_score(0.99, cal) == 100.0
+    assert 45 < em.similarity_score(0.935, cal) < 55
+    assert em.similarity_score(0.80, cal) == 0.0
+    legacy = em._SIM_CAL_LEGACY
+    assert em.similarity_score(0.0, legacy) == 50.0
+    assert em.similarity_score(1.0, legacy) == 100.0
+
+
+def test_calibrate_similarity_falls_back_on_tiny_library(monkeypatch):
+    from app.engine import embeddings as em
+    monkeypatch.setattr(em, "_SIM_CAL", None)
+    conn = _in_mem_db()
+    assert em.calibrate_similarity(conn) == em._SIM_CAL_LEGACY
+    em.invalidate_similarity_calibration()
+    assert em._SIM_CAL is None
+
+
 def test_confirms_duplicate_requires_name_agreement():
     """Regression: a 0.9999 lite-embedding cosine paired Janet Jackson
     with Skrillex and deleted 1106 corpus files as 'dups' (2026-07-06).
