@@ -1741,6 +1741,26 @@ class SettingsPage(ctk.CTkFrame):
                     root, on_progress=on_progress, dry_run=dry_run)
                 for k in totals:
                     totals[k] += summary.get(k, 0)
+                # Persist the verdicts so the Library ⚠ badges reflect
+                # reality — a Diagnostiquer flags, a Réparer clears.
+                try:
+                    from app.engine.library import (get_connection,
+                                                      mark_corrupt)
+                    conn = get_connection()
+                    for d in summary.get("details", []):
+                        p = d.get("path")
+                        if not p:
+                            continue
+                        if d.get("repaired"):
+                            mark_corrupt(conn, p, False)
+                        elif d.get("status") in ("corrupt",
+                                                  "trailing_garbage",
+                                                  "riff_size_mismatch",
+                                                  "review"):
+                            mark_corrupt(conn, p, True)
+                except Exception as e:
+                    from app.logger import log_warning
+                    log_warning(f"repair scan: flag persist failed: {e}")
 
             if dry_run:
                 msg = (f"Diagnostic terminé — {totals['scanned']} fichiers, "

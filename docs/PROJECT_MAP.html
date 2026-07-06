@@ -618,9 +618,10 @@ const QUESTS = [
  {id:'A3', l:'A3 · UI réparation', lane:'A', x:575, y:188, st:'done', xp:20, deps:['A1'],
   d:"Boutons Diagnostiquer/Réparer étendus v2 (compte structure/review), cases par format dans Interop.",
   f:'app/ui/settings.py', ok:'Livré 2026-07-02'},
- {id:'AX', l:'⚔ RÉPARER LES 363 WAV', lane:'A', x:760, y:150, st:'available', xp:50, deps:['A2','A3'], star:true,
-  d:"LA quête à toi : Settings → Réparation → Diagnostiquer, puis Réparer. Protocole : 10 fichiers → vérification Rekordbox 7 → les 353 restants. Undo disponible via data/repair_tails.",
-  f:'ton clic', ok:'363 WAV rouvrent dans Rekordbox', gate:'Toi — aucun blocage technique'},
+ {id:'AX', l:'⚔ RÉPARER LES 363 WAV', lane:'A', x:760, y:150, st:'active', xp:50, prog:.6, deps:['A2','A3'], star:true,
+  d:"Pilote exécuté 2026-07-05 : 10/10 réparés + vérifiés machine (chunk walk ok, wave décode), tails d'undo conservés, 353 flagués ⚠ en DB (badges Library actifs). À TOI : ouvre les 10 dans Rekordbox 7, puis Settings → Réparer pour les 353.",
+  f:'Rekordbox + ton clic', ok:'363 WAV rouvrent dans Rekordbox',
+  gate:'Ta vérif Rekordbox des 10 fichiers pilotes'},
  // — Sprint B
  {id:'B1', l:'B1 · Tests parser/matcher/L4', lane:'B', x:270, y:300, st:'done', xp:40, deps:['map'],
   d:"41 tests : parser sur fixture schema.org synthétique, durée ISO, précision du matcher (autre track même artiste < 0.8), placeholder ID, L4 None sans modèle — plus tout l'acquis (repair v2, ordre playlists, resolve).",

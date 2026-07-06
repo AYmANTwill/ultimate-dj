@@ -218,6 +218,21 @@ def download_missing(missing: list[dict],
 
 # ── Step 5+6: Analyze + (optional) purge audio ───────────────────
 
+def _confirms_duplicate(candidate_path: str, lib_title: str) -> bool:
+    """Name-level confirmation required before an audio-cosine hit may
+    delete a corpus file as 'duplicate'. The candidate stem follows the
+    downloader convention 'NN - Artist - Title'."""
+    import re
+    from app.engine.tracklists import name_match_score
+    stem = re.sub(r"^\d+\s*[-_.]\s*", "", Path(candidate_path).stem)
+    if " - " in stem:
+        artist, _, title = stem.partition(" - ")
+    else:
+        artist, title = "", stem
+    return name_match_score(artist.strip(), title.strip(),
+                            lib_title or "") >= 0.75
+
+
 def analyze_into_db(paths: list[str], *, source: str = "training",
                      mode: str = "embeddings_only",
                      on_progress: Callable | None = None,
@@ -256,9 +271,21 @@ def analyze_into_db(paths: list[str], *, source: str = "training",
             # existing USER track ≥ 0.92 cosine, the name matcher just
             # missed it — it's a track the user already owns. Don't
             # store a redundant corpus copy; drop the file and move on.
+            # CRITICAL: audio cosine alone over-fires badly on the lite
+            # backend (measured mean 0.97 between RANDOM tracks — a
+            # 0.9999 hit paired Janet Jackson with Skrillex and wiped a
+            # whole 1106-file batch on 2026-07-06). A dup verdict must
+            # ALSO be confirmed by the names.
             if vec is not None:
                 dup_path, dup_score = library.find_audio_duplicate(
                     conn, vec, threshold=0.92, source="user")
+                if dup_path is not None:
+                    row = conn.execute(
+                        "SELECT title FROM tracks WHERE path = ?",
+                        (dup_path,)).fetchone()
+                    if not _confirms_duplicate(
+                            path, row["title"] if row else ""):
+                        dup_path = None
                 if dup_path is not None:
                     audio_dups += 1
                     log_info(

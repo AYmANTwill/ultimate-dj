@@ -482,6 +482,22 @@ def test_write_m3u_orders_entries(tmp_path):
     assert refs == ["First Track.mp3", "Second Track.mp3"]
 
 
+def test_confirms_duplicate_requires_name_agreement():
+    """Regression: a 0.9999 lite-embedding cosine paired Janet Jackson
+    with Skrillex and deleted 1106 corpus files as 'dups' (2026-07-06).
+    The name gate must reject cross-track pairs and accept true dups."""
+    from app.engine.training_pipeline import _confirms_duplicate
+    assert _confirms_duplicate(
+        r"C:\corpus\997 - Le Knight Club - Palm Beat.mp3",
+        "Le Knight Club - Palm Beat") is True
+    assert _confirms_duplicate(
+        r"C:\corpus\999 - Janet Jackson - Love Will Never Do.mp3",
+        "Fred again.., Skrillex, Four Tet - Baby again..") is False
+    assert _confirms_duplicate(
+        r"C:\corpus\996 - Traxmen & Eric Martin - Sump Pump.mp3",
+        "Paraçek, CARGO - SEXY") is False
+
+
 # ── setlist.fm fallback (C2) ─────────────────────────────────────
 
 _SLFM_SETLIST = {
