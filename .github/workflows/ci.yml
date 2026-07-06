@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+          pip install pytest ruff
+
+      # Lint is informational for now — the codebase predates ruff
+      # enforcement. Flip continue-on-error off once the backlog is clean.
+      - name: Ruff (lint, non-blocking)
+        run: ruff check app/ tests/
+        continue-on-error: true
+
+      - name: Tests
+        run: python -m pytest tests/ -q
