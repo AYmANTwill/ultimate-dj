@@ -334,8 +334,14 @@ class LibraryPage(ctk.CTkFrame):
             if corrupt:
                 title = f"⚠  {title}"
             kbps = t.get("bitrate") or 0
-            kbps_txt = ("♾ " + str(kbps) if kbps >= 900
-                        else str(kbps) if kbps else "?")
+            est = t.get("est_kbps") or 0
+            fake = 0 < est <= 240 and kbps >= 300
+            if fake:
+                kbps_txt = f"⚠~{est}"
+            elif kbps >= 900:
+                kbps_txt = "♾ " + str(kbps)
+            else:
+                kbps_txt = str(kbps) if kbps else "?"
             rows.append((
                 title,
                 f"{(t['bpm'] or 0):.0f}{'🔒' if t.get('bpm_locked') else ''}",
@@ -349,7 +355,7 @@ class LibraryPage(ctk.CTkFrame):
             ))
             if corrupt:
                 tags.append(("err",))
-            elif 0 < kbps <= 192:
+            elif fake or 0 < kbps <= 192:
                 tags.append(("warn",))
             else:
                 tags.append(())

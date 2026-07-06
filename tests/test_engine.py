@@ -482,6 +482,27 @@ def test_write_m3u_orders_entries(tmp_path):
     assert refs == ["First Track.mp3", "Second Track.mp3"]
 
 
+def test_estimate_true_kbps_mapping():
+    from app.engine.analyzer import estimate_true_kbps
+    assert estimate_true_kbps(0) == 0
+    assert estimate_true_kbps(22000) == 999
+    assert estimate_true_kbps(20600) == 320
+    assert estimate_true_kbps(19200) == 256
+    assert estimate_true_kbps(17200) == 192
+    assert estimate_true_kbps(16100) == 160
+    assert estimate_true_kbps(14000) == 96
+
+
+def test_spectral_ceiling_on_synthetic_tone(tmp_path):
+    """A 440 Hz sine has no content above ~1 kHz — the ceiling must
+    reflect that (i.e. flag it as heavily band-limited)."""
+    from app.engine.analyzer import estimate_spectral_ceiling
+    p = tmp_path / "tone.wav"
+    _wav(p, freq=440, duration_s=35.0, sr=44100)
+    ceiling = estimate_spectral_ceiling(str(p))
+    assert 0 < ceiling < 2000
+
+
 def test_upsert_bitrate_roundtrip_and_coalesce():
     from app.engine import library
     conn = _in_mem_db()

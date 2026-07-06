@@ -119,6 +119,71 @@ def get_duration(path: str) -> float:
         return 0.0
 
 
+def estimate_spectral_ceiling(path: str, *, duration: float = 30.0) -> int:
+    """Highest sustained frequency (Hz) in the file. Lossy encoders
+    low-pass hard (128k MP3 ≈ 16 kHz, 192k ≈ 18 kHz, 320k ≈ 20.5 kHz),
+    and a transcode KEEPS the cut of its source — so a '320' container
+    or even a lossless WAV whose ceiling sits at 16 kHz is a low-bitrate
+    rip in disguise. Read-only."""
+    try:
+        # librosa.load(offset=...) lazily imports numba (broken with
+        # NumPy 2.2 on this stack) — seek via soundfile instead, with a
+        # no-offset librosa fallback for containers libsndfile can't
+        # read (m4a/aac).
+        try:
+            import soundfile as sf
+            with sf.SoundFile(path) as f:
+                sr = f.samplerate
+                want = int(duration * sr)
+                start = min(int(30.0 * sr), max(0, f.frames - want))
+                f.seek(max(0, start))
+                y = f.read(want, dtype="float32", always_2d=False)
+            if getattr(y, "ndim", 1) > 1:
+                y = y.mean(axis=1)
+        except Exception:
+            y, sr = librosa.load(path, sr=None, mono=True,
+                                  duration=duration)
+        if y.size < 4096:
+            return 0
+        # Hand-rolled numpy STFT — librosa.stft pulls numba, which is
+        # incompatible with NumPy 2.2 on this stack (same workaround as
+        # the spectral features elsewhere in the app).
+        n_fft, hop = 4096, 2048
+        n_frames = 1 + (y.size - n_fft) // hop
+        if n_frames < 3:
+            return 0
+        window = np.hanning(n_fft)
+        mag = np.zeros(n_fft // 2 + 1)
+        for i in range(n_frames):
+            frame = y[i * hop:i * hop + n_fft] * window
+            mag += np.abs(np.fft.rfft(frame))
+        mag /= n_frames
+        db = 20 * np.log10(mag / (mag.max() + 1e-12) + 1e-12)
+        freqs = np.linspace(0, sr / 2, len(db))
+        above = np.where(db > -65.0)[0]
+        return int(freqs[above[-1]]) if above.size else 0
+    except Exception as e:
+        log_warning(f"spectral_ceiling failed for {Path(path).name}: {e}")
+        return 0
+
+
+_CEILING_TO_KBPS = [(20500, 320), (19000, 256), (18000, 224),
+                    (17000, 192), (16000, 160), (15000, 128)]
+
+
+def estimate_true_kbps(ceiling_hz: int) -> int:
+    """Map a spectral ceiling to the bitrate family it betrays.
+    0 = unknown; 999 = full-band (transparent / true lossless)."""
+    if ceiling_hz <= 0:
+        return 0
+    if ceiling_hz > 21000:
+        return 999
+    for hz, kbps in _CEILING_TO_KBPS:
+        if ceiling_hz >= hz:
+            return kbps
+    return 96
+
+
 def get_bitrate(path: str) -> int:
     """Container bitrate in kbps via mutagen, 0 when unknown. WAV/FLAC
     report their true lossless rate (~900-1500); lossy containers report

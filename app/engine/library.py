@@ -171,6 +171,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             # real quality even when transcoded to a 320 container, but
             # lossless WAV/FLAC (>=900) vs lossy (<=320) is reliable.
             ("bitrate",        "INTEGER"),
+            # Spectral-ceiling estimate (analyzer.estimate_true_kbps):
+            # the bitrate family the audio itself betrays. 999 = full
+            # band. Catches transcodes the container bitrate hides.
+            ("est_kbps",       "INTEGER"),
         ]:
             if col not in existing_cols:
                 try:
@@ -299,6 +303,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("source",         "TEXT DEFAULT 'user'"),
         ("audio_purged",   "INTEGER DEFAULT 0"),
         ("bitrate",        "INTEGER"),
+        ("est_kbps",       "INTEGER"),
     ]:
         if col not in existing_cols:
             try:
