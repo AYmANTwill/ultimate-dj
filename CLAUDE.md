@@ -37,6 +37,12 @@ scraping with stealth + cookies), `transition_model.py` (Siamese L4),
 UI. `app/__init__.py` enables per-monitor DPI awareness before any Tk
 import.
 
+**Living project map: `docs/PROJECT_MAP.md`** — every subsystem, DB
+table, AI layer (L1-L5), their deep relations, and the A/B/C progress
+board. Read it at session start for context; whenever an item's status
+moves, update its État column AND append a dated line to its Journal
+(same commit as the change, like the README rule).
+
 ## Conventions (durable rules)
 
 - **No `Co-Authored-By: Claude` trailer in commits.** Solo authorship.
@@ -80,6 +86,34 @@ holds session-persistent feedback. The two durable entries today:
 - `consolidate-memory` — periodic cleanup of the memory folder
 - `review` — before opening a PR
 - `loop` / `schedule` — for the overnight corpus enrichment pipeline
+
+## ECC plugin (active — user scope)
+
+`ecc@ecc` v2.0.0 is installed and active on every session for this
+project.
+
+- **Cheat-sheet** : `docs/ECC_USAGE.md` — top 10 agents/skills mapped
+  to UltimateDJ's actual files with concrete invocation examples.
+- **Always-on cost** : ~22 163 tokens per session (~11 % of a 200 k
+  window). Do NOT disable unless the session is stalling on tokens.
+- **7 hooks fire automatically**. The `PreToolUse` fact-forcing gate
+  WILL block the first `Bash` / `Write` / any destructive command until
+  you declare (a) the current user request in one sentence AND (b)
+  what the command produces / files it will modify. Comply, don't
+  fight it. Escape if truly blocking: `ECC_GATEGUARD=off` or
+  `ECC_DISABLED_HOOKS=pre:bash:gateguard-fact-force`.
+- **Prefer ECC agents over ad-hoc code** for : Python code review
+  (`ecc:python-reviewer`), silent-swallow audits
+  (`ecc:silent-failure-hunter`), PyTorch runtime errors
+  (`ecc:pytorch-build-resolver`), security audit of auth / cookies
+  (`ecc:security-reviewer`), refactor of oversized modules
+  (`ecc:refactor-cleaner`), performance profiling
+  (`ecc:performance-optimizer`), architecture planning
+  (`ecc:architect`).
+- **Recipes** : `/ecc-recipes <workflow>` → run-order + stop
+  condition for multi-command sequences.
+- **Rules** installed under `~/.claude/rules/ecc/{common,python}/`
+  (16 files, Python-only — no TypeScript / Go / Rust / etc.).
 
 ## What NOT to do
 

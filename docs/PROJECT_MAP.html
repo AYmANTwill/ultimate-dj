@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ultimate DJ — Carte 3D du projet</title>
+<style>
+  :root{
+    --bg:#04060d; --ink:#cfeaff; --dim:#6f8aa8; --cyan:#00e5ff; --lime:#a3e635;
+    --mag:#ff4fd8; --amber:#ffb020; --red:#ff5c7a; --violet:#c084fc;
+    --panel:rgba(7,13,26,.72); --line:rgba(0,229,255,.22);
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  html,body{height:100%; overflow:hidden}
+  body{
+    background:radial-gradient(1200px 800px at 50% 35%, #0a1428 0%, #05080f 55%, #02030a 100%);
+    color:var(--ink); font-family:Consolas,"Cascadia Mono","Segoe UI",monospace;
+    user-select:none;
+  }
+  canvas#scene{position:fixed; inset:0; display:block; cursor:grab}
+  canvas#scene.drag{cursor:grabbing}
+
+  .scan{position:fixed; inset:0; pointer-events:none; z-index:9;
+    background:repeating-linear-gradient(0deg, rgba(255,255,255,.015) 0 1px, transparent 1px 3px);}
+  .vig{position:fixed; inset:0; pointer-events:none; z-index:8;
+    background:radial-gradient(ellipse at center, transparent 55%, rgba(0,0,10,.55) 100%);}
+
+  .glass{background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    backdrop-filter:blur(9px); box-shadow:0 0 24px rgba(0,229,255,.06), inset 0 0 18px rgba(0,229,255,.04);}
+
+  header{position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:20;
+    padding:10px 26px; text-align:center; white-space:nowrap}
+  header h1{font-size:15px; letter-spacing:.42em; color:var(--cyan);
+    text-shadow:0 0 12px rgba(0,229,255,.8); font-weight:600}
+  header p{font-size:10px; letter-spacing:.24em; color:var(--dim); margin-top:4px}
+
+  #left{position:fixed; top:86px; left:14px; z-index:20; width:228px; padding:12px 12px 10px; font-size:11px}
+  #right{position:fixed; top:86px; right:14px; z-index:20; width:270px; padding:12px; font-size:11px;
+    max-height:calc(100vh - 200px); overflow-y:auto}
+  #right::-webkit-scrollbar{width:4px} #right::-webkit-scrollbar-thumb{background:var(--line)}
+
+  .ttl{font-size:10px; letter-spacing:.3em; color:var(--cyan); margin-bottom:8px;
+    text-shadow:0 0 8px rgba(0,229,255,.6)}
+  .sep{height:1px; background:linear-gradient(90deg, var(--line), transparent); margin:10px 0}
+
+  .leg{display:flex; align-items:center; gap:7px; padding:3px 4px; border-radius:5px; cursor:pointer; color:var(--ink)}
+  .leg:hover{background:rgba(0,229,255,.07)}
+  .leg.off{opacity:.32}
+  .leg .dot{width:8px; height:8px; border-radius:50%; flex:none}
+
+  .flowbtn{display:block; width:100%; text-align:left; margin:3px 0; padding:5px 8px; font:inherit;
+    font-size:10.5px; color:var(--ink); background:rgba(0,229,255,.04); border:1px solid transparent;
+    border-radius:6px; cursor:pointer; letter-spacing:.04em}
+  .flowbtn:hover{border-color:var(--line)}
+  .flowbtn.on{border-color:var(--cyan); color:var(--cyan); background:rgba(0,229,255,.1);
+    box-shadow:0 0 12px rgba(0,229,255,.25)}
+
+  .stat{display:flex; justify-content:space-between; margin:4px 0; color:var(--dim)}
+  .stat b{color:var(--ink); font-weight:600}
+  .bar{height:4px; border-radius:3px; background:rgba(255,255,255,.07); margin:3px 0 8px; overflow:hidden}
+  .bar i{display:block; height:100%; background:linear-gradient(90deg, var(--cyan), var(--lime));
+    box-shadow:0 0 8px rgba(0,229,255,.7)}
+
+  .chip{display:inline-block; padding:1px 7px; border-radius:20px; font-size:9.5px; letter-spacing:.08em;
+    border:1px solid; margin-left:6px}
+  .ok{color:#4ade80; border-color:rgba(74,222,128,.5)}
+  .part{color:var(--amber); border-color:rgba(255,176,32,.5)}
+  .todo{color:var(--red); border-color:rgba(255,92,122,.5)}
+  .paused{color:var(--violet); border-color:rgba(192,132,252,.5)}
+
+  #ndesc{color:var(--dim); line-height:1.45; margin-top:6px}
+  #nrel{margin-top:8px}
+  #nrel div{padding:2px 0; color:var(--dim)}
+  #nrel span{color:var(--ink)}
+  #back{margin-top:10px; display:none}
+
+  #board{position:fixed; left:50%; transform:translateX(-50%); bottom:14px; z-index:20; width:min(1060px, 94vw)}
+  #boardHead{padding:8px 18px; text-align:center; font-size:10px; letter-spacing:.3em; color:var(--cyan);
+    cursor:pointer; text-shadow:0 0 8px rgba(0,229,255,.5)}
+  #boardBody{display:none; padding:6px 16px 14px; max-height:34vh; overflow-y:auto}
+  #boardBody.open{display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px}
+  #boardBody::-webkit-scrollbar{width:4px} #boardBody::-webkit-scrollbar-thumb{background:var(--line)}
+  .sprint h3{font-size:10px; letter-spacing:.2em; margin:8px 0 6px; color:var(--cyan)}
+  .item{font-size:10.5px; padding:5px 7px; margin:4px 0; border-left:2px solid var(--line);
+    background:rgba(0,229,255,.03); color:var(--dim); line-height:1.35}
+  .item b{color:var(--ink)}
+
+  #hint{position:fixed; bottom:16px; left:16px; z-index:20; font-size:9.5px; letter-spacing:.14em; color:var(--dim)}
+  #tip{position:fixed; z-index:30; pointer-events:none; display:none; padding:4px 9px; font-size:10.5px;
+    color:var(--cyan); background:rgba(4,10,20,.9); border:1px solid var(--line); border-radius:5px;
+    text-shadow:0 0 6px rgba(0,229,255,.6); white-space:nowrap}
+
+  /* ── Arbre de quêtes ─────────────────────────────────────── */
+  #qBtn{margin-top:7px; padding:4px 18px; font:inherit; font-size:10px; letter-spacing:.28em;
+    color:var(--amber); background:rgba(255,176,32,.08); border:1px solid rgba(255,176,32,.45);
+    border-radius:20px; cursor:pointer; text-shadow:0 0 8px rgba(255,176,32,.6)}
+  #qBtn:hover{background:rgba(255,176,32,.18); box-shadow:0 0 14px rgba(255,176,32,.35)}
+  #qOverlay{position:fixed; inset:26px; z-index:40; display:none; flex-direction:column;
+    padding:16px 20px; overflow:hidden}
+  #qOverlay.open{display:flex}
+  #qClose{position:absolute; top:10px; right:14px; font:inherit; font-size:14px; color:var(--dim);
+    background:none; border:1px solid var(--line); border-radius:6px; width:28px; height:28px;
+    cursor:pointer}
+  #qClose:hover{color:var(--red); border-color:var(--red)}
+  #qHead{display:flex; align-items:center; gap:18px; flex-wrap:wrap; margin-bottom:6px}
+  #qHead h2{font-size:13px; letter-spacing:.34em; color:var(--amber);
+    text-shadow:0 0 10px rgba(255,176,32,.7)}
+  #qGlobal{flex:1; min-width:220px}
+  #qGlobal .bar{height:7px}
+  #qGlobal .bar i{background:linear-gradient(90deg, var(--amber), var(--lime))}
+  #qLanes{display:flex; gap:14px; flex-wrap:wrap; font-size:9.5px; color:var(--dim);
+    margin-bottom:4px}
+  #qLanes b{color:var(--ink)}
+  #qNext{font-size:10px; color:var(--amber); letter-spacing:.06em; margin-bottom:4px}
+  #qScroll{flex:1; overflow:auto; border:1px solid var(--line); border-radius:8px;
+    background:rgba(3,7,15,.45)}
+  #qScroll svg{display:block; min-width:1150px}
+  .qn{cursor:pointer}
+  .qn text{font-family:Consolas,monospace; fill:#bfe6ff}
+  .qn .nm{font-size:10.5px}
+  .qn .sub{font-size:8.5px; fill:#6f8aa8}
+  .qn:hover .nm{fill:#ffffff}
+  #qDetail{margin-top:8px; padding:9px 13px; font-size:11px; border:1px solid var(--line);
+    border-radius:8px; background:rgba(0,229,255,.03); min-height:64px}
+  #qDetail .ttl{margin-bottom:5px}
+  #qDetail p{color:var(--dim); line-height:1.45; margin:3px 0}
+  #qDetail p b{color:var(--ink)}
+  @keyframes qpulse{0%,100%{opacity:.35}50%{opacity:1}}
+  .qpulse{animation:qpulse 1.6s ease-in-out infinite}
+
+  @media (max-width:1100px){ #left{display:none} }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<div class="vig"></div><div class="scan"></div>
+
+<header class="glass">
+  <h1>ULTIMATE DJ — CARTE 3D</h1>
+  <p>v1.4 · snapshot 2026-07-05 · source : docs/PROJECT_MAP.md · 18 142 LOC · 46 fichiers</p>
+  <button id="qBtn">⚔ ARBRE DE QUÊTES — <span id="qBtnPct">…</span></button>
+</header>
+
+<aside id="left" class="glass">
+  <div class="ttl">◢ COUCHES</div>
+  <div id="legend"></div>
+  <div class="sep"></div>
+  <div class="ttl">◢ FLUX END-TO-END</div>
+  <div id="flows"></div>
+</aside>
+
+<aside id="right" class="glass">
+  <div id="statsView">
+    <div class="ttl">◢ PIPELINE IA L1→L5</div>
+    <div class="stat"><span>L1 Embeddings</span><b>1033 / 1066</b></div>
+    <div class="bar"><i style="width:96.9%"></i></div>
+    <div class="stat"><span>L2 Co-occurrence</span><b>584 paires · 57 sets</b></div>
+    <div class="bar"><i style="width:39%"></i></div>
+    <div class="stat"><span>L3 Segmentation</span><b>1066 / 1066</b></div>
+    <div class="bar"><i style="width:100%"></i></div>
+    <div class="stat"><span>L4 Siamese loss</span><b>0.276 · retrain 05/07</b></div>
+    <div class="bar"><i style="width:71%"></i></div>
+    <div class="stat"><span>L5 Feedback</span><b>2 votes</b></div>
+    <div class="bar"><i style="width:8%"></i></div>
+    <div class="sep"></div>
+    <div class="ttl">◢ SANTÉ</div>
+    <div class="stat"><span>Couverture tests</span><b style="color:var(--red)">~3 %</b></div>
+    <div class="stat"><span>Silent swallows</span><b style="color:var(--amber)">122</b></div>
+    <div class="stat"><span>Fichiers &gt; 600 LOC</span><b style="color:var(--amber)">7</b></div>
+    <div class="stat"><span>Boot (cache chaud)</span><b style="color:#4ade80">&lt; 1 s</b></div>
+    <div class="stat"><span>WAV corrompus (v2)</span><b style="color:var(--red)">363</b></div>
+  </div>
+  <div id="nodeView" style="display:none">
+    <div class="ttl" id="nname"></div>
+    <div><span class="chip" id="ngroup"></span><span class="chip" id="nstatus"></span><span class="chip" id="nloc"></span></div>
+    <div id="ndesc"></div>
+    <div class="sep"></div>
+    <div class="ttl" style="font-size:9px">◢ RELATIONS</div>
+    <div id="nrel"></div>
+    <button id="back" class="flowbtn">← retour stats</button>
+  </div>
+</aside>
+
+<section id="board" class="glass">
+  <div id="boardHead">◢ AVANCEMENT — 13 ITEMS A/B/C ▲</div>
+  <div id="boardBody">
+    <div class="sprint"><h3>SPRINT A — RÉPARER LES DÉGÂTS</h3>
+      <div class="item"><b>A1</b> repair_v2 : chunk id3 trailing des 363 WAV <span class="chip paused">⏸ reporté</span></div>
+      <div class="item"><b>A2</b> Guard rails écriture (opt-in/format + pre-flight + round-trip) <span class="chip todo">à faire</span></div>
+      <div class="item"><b>A3</b> UI bulk-repair dans Settings <span class="chip todo">à faire</span></div>
+      <div class="item"><b>A4</b> Tests du chemin d'écriture <span class="chip todo">à faire</span></div>
+    </div>
+    <div class="sprint"><h3>SPRINT B — VERROUILLER LA QUALITÉ</h3>
+      <div class="item"><b>B1</b> Tests parser + matcher + inférence L4 <span class="chip todo">à faire</span></div>
+      <div class="item"><b>B2</b> Audit des 122 except:pass <span class="chip todo">à faire</span></div>
+      <div class="item"><b>B3</b> Split settings.py (1959 LOC) en package <span class="chip todo">à faire</span></div>
+      <div class="item"><b>B4</b> CI GitHub Actions (pytest + ruff) <span class="chip todo">à faire</span></div>
+      <div class="item"><b>B5</b> Installeur + code signing <span class="chip todo">backlog</span></div>
+    </div>
+    <div class="sprint"><h3>SPRINT C — GRANDIR LE SIGNAL IA</h3>
+      <div class="item"><b>C1</b> Scraper d'autres catalogues à fort match <span class="chip part">partiel</span></div>
+      <div class="item"><b>C2</b> Fallback setlist.fm <span class="chip todo">à faire</span></div>
+      <div class="item"><b>C3</b> Delta L4-vs-heuristique dans le Mixer <span class="chip part">planifié</span></div>
+      <div class="item"><b>C4</b> Auto-retrain après chaque rebuild L2 <span class="chip todo">à faire</span></div>
+    </div>
+  </div>
+</section>
+
+<div id="hint">GLISSER = ORBITE · MOLETTE = ZOOM · CLIC = DÉTAILS · DOUBLE-CLIC = RECENTRER</div>
+<div id="tip"></div>
+
+<section id="qOverlay" class="glass">
+  <button id="qClose">✕</button>
+  <div id="qHead">
+    <h2>⚔ ARBRE DE QUÊTES</h2>
+    <div id="qGlobal">
+      <div class="stat"><span>Progression globale</span><b id="qXp"></b></div>
+      <div class="bar"><i id="qGlobalBar"></i></div>
+    </div>
+  </div>
+  <div id="qLanes"></div>
+  <div id="qNext"></div>
+  <div id="qScroll"><svg id="qTree" xmlns="http://www.w3.org/2000/svg"></svg></div>
+  <div id="qDetail"><p style="color:var(--dim)">Clique une quête pour ses détails —
+    ✅ accomplie · 🟡 en cours · 🔓 disponible · 🔒 verrouillée (le bloqueur est affiché).</p></div>
+</section>
+
+<script>
+'use strict';
+/* ================= DONNÉES (snapshot 2026-07-02, source PROJECT_MAP.md) ================= */
+const GROUPS = {
+  ext:  {name:'Sources externes', color:'#ff8c1a'},
+  ui:   {name:'UI (CustomTkinter)', color:'#00e5ff'},
+  core: {name:'Engine · cœur DB',  color:'#00ffa3'},
+  audio:{name:'Engine · analyse',  color:'#38bdf8'},
+  corpus:{name:'Engine · scraping/corpus', color:'#e879f9'},
+  ia:   {name:'Engine · modèle IA', color:'#a3e635'},
+  acq:  {name:'Engine · acquisition', color:'#fbbf24'},
+  play: {name:'Engine · lecture',  color:'#c084fc'},
+  maint:{name:'Engine · maintenance', color:'#fb7185'},
+  boot: {name:'Boot & fondations', color:'#7dd3fc'},
+  db:   {name:'Base de données',   color:'#f472b6'},
+  file: {name:'Fichiers data',     color:'#2dd4bf'},
+};
+const ST = {ok:['✅ stable','ok'], part:['🟡 partiel','part'], todo:['🔴 à faire','todo'], paused:['⏸ reporté','paused'], na:['—','ok']};
+
+const D2R = Math.PI/180;
+const P = (aDeg, r, y) => ({x:Math.cos(aDeg*D2R)*r, y, z:Math.sin(aDeg*D2R)*r});
+
+const NODES = [
+  // ——— cœur
+  {id:'engLib', l:'engine/library.py', g:'core', loc:1377, st:'ok', size:15, p:{x:0,y:0,z:0},
+   d:"Le hub : schéma SQLite WAL + migrations inline, transition_score() (scorer central où L1-L5 convergent), trash/undo 30 j, find_audio_duplicate() (moitié audio du matching hybride). Connexions thread-local."},
+  // ——— engine analyse
+  {id:'engAna', l:'analyzer.py', g:'audio', loc:249, st:'part', p:P(15,175,0),
+   d:"BPM / key / energy via librosa (worker thread). write_tags() strictement opt-in — GELÉ tant que repair v2 n'est pas livré."},
+  {id:'engEmb', l:'embeddings.py', g:'audio', loc:366, st:'ok', p:P(40,175,0),
+   d:"L1 — fingerprint audio 256-d (lite/CLAP/PANNs), L2-normalisé, stocké en BLOB dans tracks.embedding. 1033/1066 encodés."},
+  {id:'engSeg', l:'segmentation.py', g:'audio', loc:173, st:'ok', p:P(65,175,0),
+   d:"L3 — détection intro/outro/drops par enveloppe RMS → tracks.intro_end / outro_start / drops. 1066/1066 segmentés."},
+  // ——— engine corpus
+  {id:'engDisc', l:'discovery.py', g:'corpus', loc:371, st:'ok', p:P(95,195,0),
+   d:"Découverte de tracklists par artiste sur 1001tracklists."},
+  {id:'engTrk', l:'tracklists.py', g:'corpus', loc:1234, st:'part', size:12, p:P(118,195,0),
+   d:"Scraping 1001TL : login Chromium visible, cookies rechargés cross-thread (mtime), Playwright thread-local (_PW_TLS), parse schema.org, matcher hybride precision-first (token-sort + dedup audio cosine 0.92). 🟡 1234 LOC, 3 responsabilités à séparer."},
+  {id:'engCooc', l:'cooccurrence.py', g:'corpus', loc:333, st:'ok', p:P(142,195,0),
+   d:"L2 — mine les sets scrapés → table track_pairs avec decay positionnel. 582 paires depuis 55 tracklists (8 avant le matcher hybride)."},
+  {id:'engPipe', l:'training_pipeline.py', g:'corpus', loc:474, st:'ok', p:P(166,195,0),
+   d:"Enrichisseur bout-en-bout : discover → scrape → match → download → analyse → train. Embed AVANT upsert (dedup). Mode embeddings_only purge l'audio après extraction."},
+  // ——— engine IA
+  {id:'engTM', l:'transition_model.py', g:'ia', loc:591, st:'ok', size:12, p:P(196,160,0),
+   d:"L4 — réseau Siamese 134-d (128-d embedding + 6 scalaires) → 64-d, contrastive loss. Poids : data/models/transition.pt. loss 0.29 sur 3492 exemples réels. bootstrap_pairs() = cold-start, maybe_auto_retrain() sous lock."},
+  {id:'engFb', l:'feedback.py', g:'ia', loc:228, st:'ok', p:P(222,160,0),
+   d:"L5 — 👍/👎 du Mixer → transition_feedback → modificateur +12/−25 immédiat + exemples pour le prochain entraînement L4."},
+  // ——— engine acquisition
+  {id:'engDlr', l:'downloader.py', g:'acq', loc:364, st:'ok', p:P(250,190,0),
+   d:"Wrapper yt-dlp (auto-update hebdo)."},
+  {id:'engSp', l:'spotify.py', g:'acq', loc:151, st:'ok', p:P(272,190,0),
+   d:"Résolution playlists / métadonnées via l'API Spotify (créds dans le keyring)."},
+  {id:'engPls', l:'playlist_sync.py', g:'acq', loc:238, st:'ok', p:P(294,190,0),
+   d:"Sync playlist Spotify → file de téléchargements."},
+  {id:'engFma', l:'fma.py', g:'acq', loc:365, st:'ok', p:P(316,190,0),
+   d:"Import du dataset Free Music Archive Small (corpus d'entraînement, source='fma', caché des pages user)."},
+  // ——— engine lecture
+  {id:'engPlay', l:'player.py', g:'play', loc:561, st:'ok', p:P(338,170,0),
+   d:"Lecture audio sounddevice + waveform."},
+  {id:'engTasks', l:'tasks.py', g:'play', loc:190, st:'ok', p:P(358,170,0),
+   d:"File des jobs d'arrière-plan — alimente l'ActivityTray."},
+  // ——— engine maintenance
+  {id:'engRep', l:'repair.py', g:'maint', loc:311, st:'part', p:P(62,220,-55),
+   d:"Réparation v1 (préfixe ID3 avant RIFF) livrée. 🔴 v2 requise : 363 WAV avec chunk id3 APRÈS data (Rekordbox les refuse) — tronquer + corriger la taille RIFF."},
+  {id:'engBak', l:'backup.py', g:'maint', loc:159, st:'ok', p:P(80,225,-55),
+   d:"Sauvegarde de la base library.db."},
+  {id:'engExp', l:'export.py', g:'maint', loc:162, st:'ok', p:P(98,225,-55),
+   d:"Export setlists / bibliothèque (M3U, Rekordbox…)."},
+  // ——— boot
+  {id:'bootCfg', l:'config.py', g:'boot', loc:198, st:'ok', p:P(258,140,-95),
+   d:"Chemins, thème, opt-ins. write_tags_to_files = False par défaut — ne jamais l'activer automatiquement."},
+  {id:'bootDeps', l:'deps.py', g:'boot', loc:242, st:'ok', p:P(284,148,-95),
+   d:"Installeur premier-lancement. torch (~700 Mo) et Chromium Playwright opt-in par section."},
+  {id:'bootLog', l:'logger.py', g:'boot', loc:58, st:'ok', p:P(310,140,-95),
+   d:"Logger fichier rotatif (log_info / log_warning)."},
+  {id:'bootSec', l:'secrets_store.py', g:'boot', loc:149, st:'ok', p:P(336,148,-95),
+   d:"Wrapper keyring → Windows Credential Manager (Spotify + 1001TL). Migration auto du plaintext legacy hors de config.json."},
+  // ——— UI
+  {id:'uiApp', l:'ui/app.py (racine)', g:'ui', loc:349, st:'ok', size:11, p:{x:0,y:205,z:25},
+   d:"Racine CTk : sidebar + frame de contenu + ActivityTray docké EN BAS DE LA RACINE (pack side=bottom — jamais place())."},
+  {id:'uiHome', l:'home', g:'ui', loc:178, st:'ok', p:P(0,255,170), d:"Dashboard d'accueil."},
+  {id:'uiLib', l:'library (page)', g:'ui', loc:792, st:'ok', p:P(30,255,170),
+   d:"Treeview + filtres + opérations bulk + panneau transitions."},
+  {id:'uiEditor', l:'track_editor', g:'ui', loc:424, st:'ok', p:P(52,255,170), d:"Édition des métadonnées d'un track."},
+  {id:'uiDup', l:'duplicates', g:'ui', loc:333, st:'ok', p:P(74,255,170), d:"Détection / fusion de doublons."},
+  {id:'uiCam', l:'camelot', g:'ui', loc:200, st:'ok', p:P(96,255,170), d:"Roue Camelot interactive."},
+  {id:'uiAna', l:'analyze (page)', g:'ui', loc:301, st:'ok', p:P(120,255,170), d:"Analyse batch avec progression."},
+  {id:'uiDisc', l:'discover (page)', g:'ui', loc:695, st:'ok', p:P(145,255,170),
+   d:"Akinator artistes + batch scraper + import URL de tracklists."},
+  {id:'uiSettings', l:'settings (page)', g:'ui', loc:1959, st:'part', size:11, p:P(170,255,170),
+   d:"~15 sections de réglages. 🟡 1959 LOC — à splitter en package settings/ (item B3)."},
+  {id:'uiMix', l:'mixer (page)', g:'ui', loc:673, st:'ok', size:11, p:P(200,255,170),
+   d:"Double deck + suggestions scorées + popup breakdown (décomposition L1-L5 du score) + boutons feedback 👍/👎."},
+  {id:'uiDeck', l:'deck (widget)', g:'ui', loc:533, st:'ok', p:P(222,255,170), d:"Widget deck : waveform, cues, transport."},
+  {id:'uiSet', l:'setlist (page)', g:'ui', loc:557, st:'ok', p:P(244,255,170), d:"Constructeur de setlists (slots JSON en DB)."},
+  {id:'uiDl', l:'download (page)', g:'ui', loc:903, st:'ok', p:P(268,255,170),
+   d:"Browser de dossiers + résolution Spotify + téléchargements. 🟡 903 LOC."},
+  {id:'uiBrowser', l:'browser embarqué', g:'ui', loc:589, st:'ok', p:P(292,255,170),
+   d:"WebView2 embarqué (Spotify / SoundCloud). force-scale-factor=1 + DPI awareness AVANT import webview."},
+  {id:'uiTray', l:'activity_tray', g:'ui', loc:263, st:'ok', p:P(330,185,160),
+   d:"Barre de statut des jobs, indestructible aux changements de page (status-bar pattern sur la racine)."},
+  // ——— sources externes
+  {id:'extTL', l:'1001tracklists', g:'ext', st:'na', size:11, p:P(118,380,70),
+   d:"Source des sets DJ réels. Scraping Playwright stealth + cookies de session (auth_state.json)."},
+  {id:'extYT', l:'YouTube / SoundCloud', g:'ext', st:'na', p:P(255,380,70), d:"Source audio via yt-dlp."},
+  {id:'extSP', l:'API Spotify', g:'ext', st:'na', p:P(285,380,70), d:"Métadonnées + playlists."},
+  {id:'extFMA', l:'Free Music Archive', g:'ext', st:'na', p:P(316,380,70), d:"Dataset libre pour le corpus d'entraînement."},
+  // ——— base de données
+  {id:'dbCore', l:'library.db (WAL)', g:'db', st:'ok', size:13, p:{x:0,y:-175,z:0},
+   d:"SQLite en mode WAL. Connexions thread-local (library._local) — jamais de connexion globale."},
+  {id:'tTracks', l:'table tracks', g:'db', st:'ok', size:11, p:P(20,115,-190),
+   d:"Table centrale, 1 ligne = 1 fichier audio. path PK, bpm/key/camelot/energy, embedding BLOB 256-d (L1), intro_end/outro_start/drops (L3), corrupt, source (user/training/fma), audio_purged."},
+  {id:'tPairs', l:'table track_pairs (L2)', g:'db', st:'ok', p:P(130,115,-190),
+   d:"path_a, path_b, weight, sets. Reconstruite par cooccurrence.rebuild(). 582 paires."},
+  {id:'tFb', l:'table transition_feedback (L5)', g:'db', st:'ok', p:P(200,115,-190),
+   d:"path_a, path_b, like_score, created_at, source. Votes 👍/👎 du Mixer."},
+  {id:'tSet', l:'table setlists', g:'db', st:'ok', p:P(275,115,-190),
+   d:"id, name, created_at, updated_at, slots_json."},
+  {id:'tTrash', l:'table trash', g:'db', st:'ok', p:P(335,115,-190),
+   d:"Soft-delete 30 j : path, deleted_at, track_json, file_deleted. Permet l'Undo."},
+  // ——— fichiers data
+  {id:'fCache', l:'data/tracklists/*.json', g:'file', st:'ok', p:P(110,285,-120),
+   d:"Cache des tracklists parsées — permet la ré-analyse sans re-scrape."},
+  {id:'fAuth', l:'auth_state.json', g:'file', st:'ok', p:P(135,285,-120),
+   d:"Cookies de session 1001TL (gitignoré). Rechargés par chaque thread via mtime — toujours passer par _get_thread_browser()."},
+  {id:'fModel', l:'models/transition.pt', g:'file', st:'ok', p:P(200,285,-120),
+   d:"Poids du Siamese L4. Écrit par train(), lu en lazy par score()."},
+  {id:'fCfg', l:'config.json', g:'file', st:'ok', p:P(265,285,-120),
+   d:"Réglages persistés. Les secrets en ont été migrés vers le keyring."},
+];
+
+const KC = {call:'#3ae0ff', db:'#ff4fd8', ai:'#a3e635', ext:'#ff9e2c', file:'#2dd4bf'};
+const EDGES = [
+  // UI host
+  ['uiApp','uiHome','call'],['uiApp','uiLib','call'],['uiApp','uiAna','call'],['uiApp','uiDl','call'],
+  ['uiApp','uiDisc','call'],['uiApp','uiMix','call'],['uiApp','uiSet','call'],['uiApp','uiSettings','call'],
+  ['uiApp','uiCam','call'],['uiApp','uiDup','call'],['uiApp','uiBrowser','call'],['uiApp','uiTray','call'],
+  ['uiLib','uiEditor','call'],
+  // UI → engine
+  ['uiLib','engLib','call'],['uiEditor','engLib','call'],['uiDup','engLib','call'],['uiCam','engLib','call'],
+  ['uiSet','engLib','call'],['uiAna','engAna','call'],['uiAna','engTasks','call'],
+  ['uiDl','engDlr','call'],['uiDl','engSp','call'],['uiDl','engPls','call'],
+  ['uiDisc','engDisc','call'],['uiDisc','engTrk','call'],['uiDisc','engPipe','call'],
+  ['uiMix','engLib','call'],['uiMix','engFb','call'],['uiMix','engPlay','call'],['uiDeck','engPlay','call'],
+  ['uiTray','engTasks','call'],
+  ['uiSettings','engRep','call'],['uiSettings','engBak','call'],['uiSettings','engFma','call'],
+  ['uiSettings','engPipe','call'],['uiSettings','bootSec','call'],['uiSettings','engCooc','call'],
+  ['uiSettings','engTM','call'],['uiSettings','engTrk','call'],
+  // engine ↔ DB
+  ['engLib','tTracks','db'],['engLib','tPairs','db'],['engLib','tFb','db'],['engLib','tSet','db'],['engLib','tTrash','db'],
+  ['engLib','dbCore','db'],
+  ['engAna','tTracks','db'],['engEmb','tTracks','db'],['engSeg','tTracks','db'],
+  ['engCooc','tPairs','db'],['engFb','tFb','db'],['engTM','tFb','db'],['engTM','tPairs','db'],
+  ['engRep','tTracks','db'],['engBak','dbCore','db'],['engExp','tSet','db'],['engFma','tTracks','db'],
+  // engine ↔ fichiers
+  ['engTrk','fCache','file'],['engTrk','fAuth','file'],['engCooc','fCache','file'],
+  ['engTM','fModel','file'],['bootCfg','fCfg','file'],
+  // pipeline interne
+  ['engDisc','engTrk','call'],['engTrk','engLib','call'],['engDlr','engAna','call'],
+  ['engPipe','engDisc','call'],['engPipe','engTrk','call'],['engPipe','engDlr','call'],
+  ['engPipe','engAna','call'],['engPipe','engTM','call'],
+  ['engLib','engTM','ai'],['engLib','engFb','ai'],
+  ['engPls','engSp','call'],['engPls','engDlr','call'],
+  // externes
+  ['extTL','engTrk','ext'],['extYT','engDlr','ext'],['extSP','engSp','ext'],['extFMA','engFma','ext'],
+  ['uiBrowser','extSP','ext'],
+];
+
+const FLOWS = [
+  {name:'F1 · Import & analyse d’un track',
+   e:[['extYT','engDlr'],['engDlr','engAna'],['engAna','tTracks'],['engEmb','tTracks'],['engSeg','tTracks'],['engLib','tTracks']]},
+  {name:'F2 · Corpus → entraînement L4',
+   e:[['extTL','engTrk'],['engDisc','engTrk'],['engTrk','fCache'],['engCooc','fCache'],['engCooc','tPairs'],
+      ['engTrk','engLib'],['engTM','tPairs'],['engPipe','engTM'],['engTM','fModel']]},
+  {name:'F3 · Scoring d’une transition',
+   e:[['uiMix','engLib'],['engLib','tTracks'],['engLib','tPairs'],['engLib','engTM'],['engTM','fModel'],['engLib','engFb']]},
+  {name:'F4 · Boucle de feedback',
+   e:[['uiMix','engFb'],['engFb','tFb'],['engTM','tFb'],['engTM','fModel']]},
+  {name:'F5 · Sécurité fichiers audio',
+   e:[['uiSettings','engRep'],['engRep','tTracks'],['engAna','tTracks']]},
+];
+
+/* ================= MOTEUR 3D ================= */
+const cv = document.getElementById('scene'), ctx = cv.getContext('2d');
+let W=0, H=0, DPR=1;
+function resize(){ DPR=Math.min(devicePixelRatio||1,2); W=innerWidth; H=innerHeight;
+  cv.width=W*DPR; cv.height=H*DPR; cv.style.width=W+'px'; cv.style.height=H+'px';
+  ctx.setTransform(DPR,0,0,DPR,0,0); }
+addEventListener('resize', resize); resize();
+
+const cam = {yaw:.65, pitch:.34, dist:760, fov:640, zoom:1};
+const HOME = {...cam};
+let drag=null, lastMove=0, hoverN=null, selN=null, activeFlow=-1, groupOff=new Set();
+let dash=0;
+
+const nById = Object.fromEntries(NODES.map(n=>[n.id,n]));
+NODES.forEach(n=>{ n.size = n.size||9; });
+const eKey = (a,b)=> a<b? a+'|'+b : b+'|'+a;
+const flowSets = FLOWS.map(f=>{
+  const es=new Set(), ns=new Set();
+  f.e.forEach(([a,b])=>{ es.add(eKey(a,b)); ns.add(a); ns.add(b); });
+  return {es,ns};
+});
+// arêtes des flux absentes du graphe de base → les ajouter (fines)
+FLOWS.forEach(f=>f.e.forEach(([a,b])=>{
+  if(!EDGES.some(e=>eKey(e[0],e[1])===eKey(a,b))) EDGES.push([a,b,'call']);
+}));
+
+const STARS = Array.from({length:230},()=>{ const th=Math.random()*6.283, ph=Math.acos(2*Math.random()-1),
+  r=700+Math.random()*600; return {x:r*Math.sin(ph)*Math.cos(th), y:r*Math.cos(ph)*.6, z:r*Math.sin(ph)*Math.sin(th),
+  a:.15+Math.random()*.5}; });
+
+const glowCache={};
+function glow(color){
+  if(glowCache[color]) return glowCache[color];
+  const c=document.createElement('canvas'); c.width=c.height=64;
+  const g=c.getContext('2d'), gr=g.createRadialGradient(32,32,0,32,32,32);
+  gr.addColorStop(0,'#ffffff'); gr.addColorStop(.25,color); gr.addColorStop(1,'rgba(0,0,0,0)');
+  g.fillStyle=gr; g.fillRect(0,0,64,64);
+  return glowCache[color]=c;
+}
+function proj(p){
+  const cy=Math.cos(cam.yaw), sy=Math.sin(cam.yaw);
+  const x=p.x*cy-p.z*sy, z0=p.x*sy+p.z*cy;
+  const cp=Math.cos(cam.pitch), sp=Math.sin(cam.pitch);
+  const y=p.y*cp-z0*sp, z=p.y*sp+z0*cp;
+  const s=cam.fov/(cam.dist+z)*cam.zoom;
+  return {x:W/2+x*s, y:H/2-y*s, z, s};
+}
+const dimmed = n => groupOff.size && groupOff.has(n.g);
+
+function frame(t){
+  if(!drag && t-lastMove>3800) cam.yaw += .0016;
+  dash -= .9;
+  ctx.clearRect(0,0,W,H);
+
+  // étoiles
+  ctx.fillStyle='#9fdcff';
+  for(const s of STARS){ const q=proj(s); if(q.z<-cam.dist+40) continue;
+    ctx.globalAlpha=s.a*Math.max(.15,Math.min(1,q.s)); ctx.fillRect(q.x,q.y,1.2,1.2); }
+  ctx.globalAlpha=1;
+
+  const pr={}; NODES.forEach(n=>pr[n.id]=proj(n.p));
+  const fl = activeFlow>=0 ? flowSets[activeFlow] : null;
+
+  // arêtes
+  for(const [a,b,k] of EDGES){
+    const A=pr[a], B=pr[b]; const na=nById[a], nb=nById[b];
+    const inFlow = fl && fl.es.has(eKey(a,b));
+    let alpha = inFlow? .95 : (fl? .04 : .14);
+    if(!inFlow && (dimmed(na)||dimmed(nb))) alpha=.03;
+    if(!inFlow && (hoverN===na||hoverN===nb||selN===na||selN===nb)) alpha=.55;
+    const depth=Math.max(.35,Math.min(1,(A.s+B.s)*.8));
+    ctx.strokeStyle=KC[k]||KC.call; ctx.globalAlpha=alpha*depth;
+    ctx.lineWidth=inFlow?1.7:.7;
+    if(inFlow){ ctx.setLineDash([7,9]); ctx.lineDashOffset=dash;
+      ctx.shadowColor=KC[k]; ctx.shadowBlur=8; }
+    ctx.beginPath(); ctx.moveTo(A.x,A.y); ctx.lineTo(B.x,B.y); ctx.stroke();
+    ctx.setLineDash([]); ctx.shadowBlur=0;
+  }
+  ctx.globalAlpha=1;
+
+  // nœuds (triés par profondeur)
+  const order=[...NODES].sort((m,n)=>pr[n.id].z-pr[m.id].z);
+  for(const n of order){
+    const q=pr[n.id]; if(q.z<-cam.dist+40) continue;
+    const col=GROUPS[n.g].color;
+    const inFlow = fl && fl.ns.has(n.id);
+    let a = fl? (inFlow? 1:.14) : 1;
+    if(dimmed(n)) a=Math.min(a,.1);
+    const hot = n===hoverN||n===selN;
+    const r = n.size*q.s*(hot?1.5:1)*(inFlow?1.25:1);
+    ctx.globalAlpha=a;
+    ctx.drawImage(glow(col), q.x-r*2.6, q.y-r*2.6, r*5.2, r*5.2);
+    ctx.beginPath(); ctx.fillStyle=hot?'#ffffff':col;
+    ctx.arc(q.x,q.y,Math.max(1.6,r*.42),0,6.283); ctx.fill();
+    if(n===selN){ ctx.strokeStyle=col; ctx.globalAlpha=.5+.4*Math.sin(t*.005);
+      ctx.lineWidth=1.4; ctx.beginPath(); ctx.arc(q.x,q.y,r*1.15+5,0,6.283); ctx.stroke(); }
+    // label
+    const showL = hot || inFlow || n.size>=11 || q.s>1.15;
+    if(showL && a>.2){
+      ctx.globalAlpha=Math.min(1,a)*Math.max(.4,Math.min(1,q.s));
+      ctx.font=`${hot?11:9.5}px Consolas,monospace`;
+      ctx.fillStyle=hot?'#ffffff':'#bfe6ff';
+      ctx.shadowColor='#001522'; ctx.shadowBlur=4;
+      ctx.fillText(n.l, q.x+r*.7+5, q.y+3.5);
+      ctx.shadowBlur=0;
+    }
+  }
+  ctx.globalAlpha=1;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* ================= INTERACTIONS ================= */
+function pick(mx,my){
+  let best=null, bd=18;
+  for(const n of NODES){ const q=proj(n.p); if(q.z<-cam.dist+40) continue;
+    const d=Math.hypot(q.x-mx,q.y-my)-n.size*q.s*.5;
+    if(d<bd){ bd=d; best=n; } }
+  return best;
+}
+const tip=document.getElementById('tip');
+cv.addEventListener('mousedown',e=>{ drag={x:e.clientX,y:e.clientY}; cv.classList.add('drag'); });
+addEventListener('mouseup',()=>{ drag=null; cv.classList.remove('drag'); });
+addEventListener('mousemove',e=>{
+  lastMove=performance.now();
+  if(drag){ cam.yaw+=(e.clientX-drag.x)*.005; cam.pitch+=(e.clientY-drag.y)*.004;
+    cam.pitch=Math.max(-1.3,Math.min(1.3,cam.pitch)); drag={x:e.clientX,y:e.clientY}; return; }
+  hoverN=pick(e.clientX,e.clientY);
+  cv.style.cursor=hoverN?'pointer':'grab';
+  if(hoverN){ tip.style.display='block'; tip.textContent=hoverN.l;
+    tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY+10)+'px'; }
+  else tip.style.display='none';
+});
+cv.addEventListener('wheel',e=>{ e.preventDefault(); lastMove=performance.now();
+  cam.zoom=Math.max(.45,Math.min(3.2,cam.zoom*(e.deltaY>0?.92:1.09))); },{passive:false});
+cv.addEventListener('click',e=>{ const n=pick(e.clientX,e.clientY); if(n){ selN=n; showNode(n); }});
+cv.addEventListener('dblclick',()=>{ Object.assign(cam,HOME); selN=null; showStats(); });
+
+/* ================= PANNEAUX ================= */
+const legend=document.getElementById('legend');
+for(const [gid,g] of Object.entries(GROUPS)){
+  const el=document.createElement('div'); el.className='leg';
+  el.innerHTML=`<span class="dot" style="background:${g.color}; box-shadow:0 0 7px ${g.color}"></span>${g.name}`;
+  el.onclick=()=>{ groupOff.has(gid)? groupOff.delete(gid): groupOff.add(gid);
+    el.classList.toggle('off'); };
+  legend.appendChild(el);
+}
+const flowsEl=document.getElementById('flows');
+const offBtn=document.createElement('button'); offBtn.className='flowbtn on'; offBtn.textContent='◉ Aucun flux';
+flowsEl.appendChild(offBtn);
+const fBtns=[offBtn];
+FLOWS.forEach((f,i)=>{ const b=document.createElement('button'); b.className='flowbtn'; b.textContent=f.name;
+  b.onclick=()=>setFlow(i); flowsEl.appendChild(b); fBtns.push(b); });
+offBtn.onclick=()=>setFlow(-1);
+function setFlow(i){ activeFlow=i;
+  fBtns.forEach((b,j)=>b.classList.toggle('on', j===i+1)); }
+
+const statsView=document.getElementById('statsView'), nodeView=document.getElementById('nodeView');
+function showStats(){ statsView.style.display='block'; nodeView.style.display='none'; }
+function showNode(n){
+  statsView.style.display='none'; nodeView.style.display='block';
+  document.getElementById('nname').textContent='◢ '+n.l;
+  const g=document.getElementById('ngroup'); g.textContent=GROUPS[n.g].name;
+  g.className='chip'; g.style.color=GROUPS[n.g].color; g.style.borderColor=GROUPS[n.g].color;
+  const s=document.getElementById('nstatus'); s.textContent=ST[n.st][0]; s.className='chip '+ST[n.st][1];
+  const lc=document.getElementById('nloc'); lc.textContent=n.loc? n.loc+' LOC':'—'; lc.className='chip ok';
+  lc.style.color='var(--dim)'; lc.style.borderColor='rgba(140,170,200,.4)';
+  document.getElementById('ndesc').textContent=n.d;
+  const rel=document.getElementById('nrel'); rel.innerHTML='';
+  EDGES.filter(e=>e[0]===n.id||e[1]===n.id).forEach(([a,b,k])=>{
+    const other=nById[a===n.id? b:a]; const arrow=a===n.id? '→':'←';
+    const d=document.createElement('div');
+    d.innerHTML=`<span style="color:${KC[k]}">${arrow}</span> <span>${other.l}</span>`;
+    rel.appendChild(d);
+  });
+  document.getElementById('back').style.display='block';
+}
+document.getElementById('back').onclick=()=>{ selN=null; showStats(); };
+
+document.getElementById('boardHead').onclick=function(){
+  const b=document.getElementById('boardBody'); b.classList.toggle('open');
+  this.textContent=b.classList.contains('open')?
+    '◢ AVANCEMENT — 13 ITEMS A/B/C ▼':'◢ AVANCEMENT — 13 ITEMS A/B/C ▲';
+};
+
+/* ================= ARBRE DE QUÊTES (snapshot 2026-07-05) ================= */
+const QLANES = {F:'Fondations', A:'Sprint A · fichiers', B:'Sprint B · qualité',
+                C:'Sprint C · signal IA', S:'Découvertes'};
+const QST = {
+  done:      {c:'#4ade80', ic:'✓', lbl:'✅ accomplie'},
+  active:    {c:'#ffb020', ic:'◐', lbl:'🟡 en cours'},
+  available: {c:'#00e5ff', ic:'!',  lbl:'🔓 disponible'},
+  locked:    {c:'#55657a', ic:'🔒', lbl:'🔒 verrouillée'},
+};
+const QUESTS = [
+ {id:'map', l:'Carte vivante', lane:'F', x:95, y:95, st:'done', xp:20, deps:[],
+  d:"PROJECT_MAP.md + PLAN_CHANTIERS.md + carte 3D — la vue claire qui débloque tout le reste.",
+  f:'docs/', ok:'Livré 2026-07-02'},
+ // — Sprint A
+ {id:'A4', l:'A4 · Tests écriture', lane:'A', x:270, y:150, st:'done', xp:30, deps:['map'],
+  d:"16 tests sur fixtures WAV synthétiques : walker, truncate, idempotence, refus des chunks légitimes, undo byte-identique, guards.",
+  f:'tests/test_repair_v2.py', ok:'pytest vert · 2026-07-02'},
+ {id:'A1', l:'A1 · Repair v2 moteur', lane:'A', x:425, y:150, st:'done', xp:40, deps:['A4'],
+  d:"Walker de chunks RIFF, troncature du tail id3 + correction taille RIFF, backup du tail dans data/repair_tails (undo intégral sans coût disque).",
+  f:'app/engine/repair.py', ok:'Dry-run réel : 363/451, 0 faux positif'},
+ {id:'A2', l:'A2 · Guard rails', lane:'A', x:575, y:118, st:'done', xp:25, deps:['A1'],
+  d:"Opt-in PAR format (WAV/FLAC/M4A refusés même via force), pre-flight magic-byte, écriture WAV verified-or-reverted byte-identique.",
+  f:'app/config.py · app/engine/analyzer.py', ok:'Le vecteur mutagen-WAVE est neutralisé'},
+ {id:'A3', l:'A3 · UI réparation', lane:'A', x:575, y:188, st:'done', xp:20, deps:['A1'],
+  d:"Boutons Diagnostiquer/Réparer étendus v2 (compte structure/review), cases par format dans Interop.",
+  f:'app/ui/settings.py', ok:'Livré 2026-07-02'},
+ {id:'AX', l:'⚔ RÉPARER LES 363 WAV', lane:'A', x:760, y:150, st:'available', xp:50, deps:['A2','A3'], star:true,
+  d:"LA quête à toi : Settings → Réparation → Diagnostiquer, puis Réparer. Protocole : 10 fichiers → vérification Rekordbox 7 → les 353 restants. Undo disponible via data/repair_tails.",
+  f:'ton clic', ok:'363 WAV rouvrent dans Rekordbox', gate:'Toi — aucun blocage technique'},
+ // — Sprint B
+ {id:'B1', l:'B1 · Tests parser/matcher/L4', lane:'B', x:270, y:300, st:'done', xp:40, deps:['map'],
+  d:"41 tests : parser sur fixture schema.org synthétique, durée ISO, précision du matcher (autre track même artiste < 0.8), placeholder ID, L4 None sans modèle — plus tout l'acquis (repair v2, ordre playlists, resolve).",
+  f:'tests/', ok:'41/41 verts · 2026-07-05'},
+ {id:'B4', l:'B4 · CI GitHub Actions', lane:'B', x:430, y:300, st:'done', xp:20, deps:['B1'],
+  d:"ci.yml sur windows-latest : pip requirements → ruff (non-bloquant pour l'instant) → pytest bloquant. Vérifié : aucun import torch/playwright top-level ne casse la collection.",
+  f:'.github/workflows/ci.yml', ok:'Livré 2026-07-05 — badge au prochain push'},
+ {id:'B5', l:'B5 · Installeur + signing', lane:'B', x:580, y:300, st:'available', xp:15, deps:['B4'],
+  d:"MSI/NSIS + signature de code pour passer SmartScreen.",
+  f:'ultimate_dj.spec', ok:'Install double-clic sans warning', gate:'Backlog — après un premier badge CI vert'},
+ {id:'B2', l:'B2 · Audit 122 except:pass', lane:'B', x:270, y:372, st:'active', xp:30, prog:.7, deps:['map'],
+  d:"Passe data-path faite : 11 log_warning ajoutés (JSON corrompus library/export, scrape→cache discovery, BLOB embeddings, durée 0 analyzer) sans toucher au contrôle de flux. Restent les sites best-effort/UI, majoritairement légitimes.",
+  f:'app/engine/', ok:'Data-paths tracés · 2026-07-05'},
+ {id:'B3', l:'B3 · Split settings.py', lane:'B', x:430, y:372, st:'available', xp:25, deps:['map'],
+  d:"1959 LOC → package settings/ (_credentials, _paths, _ai, _repair…).",
+  f:'app/ui/settings.py', ok:'Aucun fichier > 800 LOC dans ui/'},
+ // — Sprint C
+ {id:'C3', l:'C3 · Delta L4 au Mixer', lane:'C', x:270, y:472, st:'done', xp:30, deps:['map'],
+  d:"l4_verdict engine + bannière popup + colonne L4 + encart « le modèle doute ».",
+  f:'app/engine/library.py · app/ui/mixer.py', ok:'Livré 2026-07-02'},
+ {id:'L5v', l:'⚔ 50 votes L5', lane:'C', x:430, y:472, st:'active', xp:35, prog:.04, deps:['C3'],
+  d:"Mixer et voter — touches F/D, l'encart doute cible les labels à plus forte valeur (active learning). 2/50 votes.",
+  f:'toi + le Mixer', ok:'50 votes → effet L5 mesurable au breakdown', gate:'De l’usage, pas du code'},
+ {id:'C4', l:'C4 · Retrain post-rebuild', lane:'C', x:270, y:545, st:'done', xp:10, deps:['map'],
+  d:"maybe_auto_retrain(force) après « Reconstruire la matrice », gardé par opt-in + delta de paires.",
+  f:'app/ui/settings.py', ok:'Livré 2026-07-02'},
+ {id:'C1', l:'C1 · Corpus 1500 paires', lane:'C', x:430, y:545, st:'active', xp:60, prog:.39, deps:['C4','S3'],
+  d:"Batch 1 : retrain loss 0.2761, 608 manquants identifiés. Batch 2 EN COURS (2026-07-05) : IP libérée, les téléchargements passent réellement (~180/608 [ok] au dernier pointage) — rebuild + retrain suivront.",
+  f:'training_pipeline.enrich_corpus', ok:'≥1500 paires, loss ≤0.28, compte 1001TL sain'},
+ {id:'CR', l:'⚔ Relancer le batch (608)', lane:'C', x:600, y:545, st:'done', xp:25, deps:['C1','S2'], star:true,
+  d:"IP sondée libre le 2026-07-05 → batch relancé en arrière-plan avec le downloader réparé. Les [ok] défilent.",
+  f:'scratchpad c1_batch_runner.py', ok:'Relancé — les paires décolleront à la fin du run'},
+ {id:'C2', l:'C2 · Fallback setlist.fm', lane:'C', x:760, y:508, st:'active', xp:35, prog:.8, deps:['map'],
+  d:"Squelette livré : client REST stdlib, mapping cover→artiste réel, écriture au format exact du cache cooccurrence, 3 tests mockés. Reste : ta clé API gratuite (config setlistfm_api_key) + un bouton UI.",
+  f:'app/engine/setlist_fm.py', ok:'Corpus continue de croître sans 1001TL',
+  gate:'Clé API gratuite à créer (setlist.fm/settings/api)'},
+ // — Découvertes (side-quests résolues en route)
+ {id:'S1', l:'S1 · Ordre Spotify → M3U', lane:'S', x:270, y:640, st:'done', xp:15, deps:['map'],
+  d:"compute_diff ré-ordonné + .m3u8 écrit à chaque sync (importable Rekordbox).",
+  f:'app/engine/playlist_sync.py', ok:'Corrigé 2026-07-05'},
+ {id:'S2', l:'S2 · Fix downloader YouTube', lane:'S', x:430, y:640, st:'done', xp:20, deps:['map'],
+  d:"Pin player_client:web + cookiesfrombrowser → mur PO-token, 608/608 échecs. Retirés, vérifié par vrai téléchargement.",
+  f:'app/engine/downloader.py', ok:'ok=1 fail=0 end-to-end · 2026-07-05'},
+ {id:'S3', l:'S3 · Contrat resolve↔matcher', lane:'S', x:600, y:640, st:'done', xp:10, deps:['map'],
+  d:"resolve_missing consommait l'ancien format dict du matcher → AttributeError. Réaligné + test + garde anti-ID.",
+  f:'app/engine/training_pipeline.py', ok:'Batch passe resolve · 2026-07-05'},
+ {id:'S4', l:'S4 · Sélection tracks + resync bootstrap', lane:'S', x:800, y:640, st:'done', xp:25, deps:['S1'],
+  d:"Demandes user : ① modal de sélection avec filtre/compteur/Tout-Rien avant tout téléchargement de playlist (100+ songs) ; ② bootstrap du cache depuis un dossier déjà téléchargé AVANT le système de sync (match flou des fichiers) → seuls les nouveaux morceaux téléchargent. Bonus : fix double-espaces dans la clé floue partagée.",
+  f:'app/ui/download.py · app/engine/playlist_sync.py', ok:'43/43 tests · 2026-07-05'},
+];
+const qById = Object.fromEntries(QUESTS.map(q=>[q.id,q]));
+
+function qProgress(){
+  let tot=0, got=0;
+  const lane={};
+  for(const q of QUESTS){
+    tot+=q.xp;
+    const g = q.st==='done'? q.xp : q.st==='active'? q.xp*(q.prog||0) : 0;
+    got+=g;
+    (lane[q.lane] ||= {tot:0, got:0});
+    lane[q.lane].tot+=q.xp; lane[q.lane].got+=g;
+  }
+  return {tot, got, pct:Math.round(got/tot*100), lane};
+}
+
+function qBuildTree(){
+  const W=1150, H=700;
+  let svg=`<svg id="qTree" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  // séparateurs + titres de lanes
+  const laneY={F:60, A:150, B:335, C:508, S:640};
+  for(const [k,name] of Object.entries(QLANES)){
+    svg+=`<text x="16" y="${laneY[k]-32}" font-size="9" letter-spacing="3"
+           fill="#3d5570" font-family="Consolas">${name.toUpperCase()}</text>`;
+  }
+  // arêtes
+  for(const q of QUESTS) for(const d of q.deps){
+    const a=qById[d]; if(!a) continue;
+    const col=QST[q.st].c;
+    const dash=q.st==='locked'? 'stroke-dasharray="4 6"':'';
+    svg+=`<line x1="${a.x}" y1="${a.y}" x2="${q.x}" y2="${q.y}"
+          stroke="${col}" stroke-width="1.1" opacity="${q.st==='done'?.45:.7}" ${dash}/>`;
+  }
+  // nœuds
+  for(const q of QUESTS){
+    const s=QST[q.st];
+    const r=q.star? 19:14;
+    const pulse=(q.st==='available'&&q.star)||q.st==='active'? 'class="qpulse"':'';
+    svg+=`<g class="qn" data-q="${q.id}">`;
+    svg+=`<circle cx="${q.x}" cy="${q.y}" r="${r+5}" fill="none" stroke="${s.c}"
+          stroke-width="1" opacity=".35" ${pulse}/>`;
+    svg+=`<circle cx="${q.x}" cy="${q.y}" r="${r}" fill="rgba(5,10,20,.9)"
+          stroke="${s.c}" stroke-width="${q.star?2.2:1.4}"/>`;
+    svg+=`<text x="${q.x}" y="${q.y+4}" text-anchor="middle" font-size="${q.star?13:11}"
+          fill="${s.c}">${q.star?'⚔':s.ic}</text>`;
+    svg+=`<text class="nm" x="${q.x+r+7}" y="${q.y+1}">${q.l}</text>`;
+    const sub = q.st==='active'? `en cours · ${Math.round((q.prog||0)*100)} %`
+              : q.st==='locked'? '🔒 '+(q.gate||'').slice(0,44)
+              : q.st==='available'? 'disponible · +'+q.xp+' XP'
+              : '+'+q.xp+' XP';
+    svg+=`<text class="sub" x="${q.x+r+7}" y="${q.y+13}">${sub}</text>`;
+    if(q.st==='active'){
+      const bw=64;
+      svg+=`<rect x="${q.x+r+7}" y="${q.y+18}" width="${bw}" height="3" rx="1.5"
+            fill="rgba(255,255,255,.08)"/>`;
+      svg+=`<rect x="${q.x+r+7}" y="${q.y+18}" width="${bw*(q.prog||0)}" height="3" rx="1.5"
+            fill="${s.c}"/>`;
+    }
+    svg+=`</g>`;
+  }
+  svg+='</svg>';
+  document.getElementById('qScroll').innerHTML=svg;
+  document.querySelectorAll('.qn').forEach(g=>
+    g.addEventListener('click', ()=>qShow(qById[g.dataset.q])));
+}
+
+function qShow(q){
+  const s=QST[q.st];
+  const el=document.getElementById('qDetail');
+  el.innerHTML=`
+    <div class="ttl" style="color:${s.c}">${q.star?'⚔ ':''}${q.l}
+      <span class="chip" style="color:${s.c}; border-color:${s.c}">${s.lbl}</span>
+      <span class="chip" style="color:var(--dim); border-color:rgba(140,170,200,.4)">${QLANES[q.lane]}</span>
+      <span class="chip" style="color:var(--amber); border-color:rgba(255,176,32,.5)">+${q.xp} XP</span>
+    </div>
+    <p>${q.d}</p>
+    <p><b>Fichiers :</b> ${q.f} &nbsp;·&nbsp; <b>Done quand :</b> ${q.ok}</p>
+    ${q.gate? `<p><b>Bloqueur :</b> ${q.gate}</p>`:''}
+    ${q.deps.length? `<p><b>Dépend de :</b> ${q.deps.map(d=>qById[d].l).join(' · ')}</p>`:''}`;
+}
+
+function qRefresh(){
+  const p=qProgress();
+  document.getElementById('qXp').textContent=
+    `${Math.round(p.got)} / ${p.tot} XP — ${p.pct} %`;
+  document.getElementById('qGlobalBar').style.width=p.pct+'%';
+  document.getElementById('qBtnPct').textContent=p.pct+' %';
+  document.getElementById('qLanes').innerHTML=Object.entries(QLANES).map(([k,n])=>{
+    const l=p.lane[k]||{tot:1,got:0};
+    return `<span>${n} : <b>${Math.round(l.got/l.tot*100)} %</b></span>`;
+  }).join(' · ');
+  const next=QUESTS.find(q=>q.st==='available'&&q.star)
+          ||QUESTS.find(q=>q.st==='available');
+  const gated=QUESTS.filter(q=>q.st==='locked'&&q.star);
+  document.getElementById('qNext').textContent=
+    (next? `→ PROCHAINE QUÊTE RECOMMANDÉE : ${next.l}`:'')
+    +(gated.length? `   ·   EN ATTENTE DE DÉBLOCAGE : ${gated.map(q=>q.l).join(', ')}`:'');
+}
+
+const qOverlay=document.getElementById('qOverlay');
+document.getElementById('qBtn').onclick=()=>{ qOverlay.classList.add('open'); };
+document.getElementById('qClose').onclick=()=>qOverlay.classList.remove('open');
+addEventListener('keydown', e=>{ if(e.key==='Escape') qOverlay.classList.remove('open'); });
+qBuildTree();
+qRefresh();
+</script>
+</body>
+</html>
