@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import TypedDict
@@ -120,38 +121,39 @@ def compute_diff(source_tracks: list[dict],
     safe to pass to ``download_tracks_by_search`` (just `added`) and to
     show to the user as a confirmation before mutating the disk.
     """
-    src_by_id = {t.get("spotify_id"): t for t in source_tracks
-                 if t.get("spotify_id")}
-    src_ids = set(src_by_id)
-
+    src_ids = {t.get("spotify_id") for t in source_tracks
+               if t.get("spotify_id")}
     cached_tracks = list((cache or {}).get("tracks", []))
-    cache_ids = {t["spotify_id"] for t in cached_tracks}
+    cached_by_id = {t.get("spotify_id"): t for t in cached_tracks}
 
     added: list[dict] = []
     kept: list[CachedTrack] = []
     missing: list[CachedTrack] = []
-    removed: list[CachedTrack] = []
 
-    # Anything in source that wasn't there before
-    for sid in src_ids - cache_ids:
-        added.append(src_by_id[sid])
-
-    # Cached tracks: still in source? file still on disk?
-    for ct in cached_tracks:
-        sid = ct.get("spotify_id")
-        if sid not in src_ids:
-            removed.append(ct)
+    # Single ordered walk over the SOURCE so `added` (the download
+    # queue) and `kept` come out in playlist order — the set difference
+    # this replaces scrambled the downloaded order vs Spotify.
+    seen: set[str] = set()
+    for t in source_tracks:
+        sid = t.get("spotify_id")
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        ct = cached_by_id.get(sid)
+        if ct is None:
+            added.append(t)
             continue
         fp = ct.get("filepath", "")
         if fp and os.path.isfile(fp):
             kept.append(ct)
         else:
-            # File is gone → re-download. We need the source dict (with
-            # its current artist/title spelling) to enqueue.
-            src = src_by_id.get(sid)
-            if src is not None:
-                added.append(src)
+            # File is gone → re-download with the source's current
+            # artist/title spelling; surfaced in `missing` for clarity.
+            added.append(t)
             missing.append(ct)
+
+    removed = [ct for ct in cached_tracks
+               if ct.get("spotify_id") not in src_ids]
 
     return {
         "added":   added,
@@ -161,7 +163,93 @@ def compute_diff(source_tracks: list[dict],
     }
 
 
+def _norm(s: str) -> str:
+    """Lowercased alnum, whitespace collapsed — the fuzzy key used to
+    match a Spotify (artist, title) against a filename stem. Collapsing
+    matters: stripping '-' from "Artist - Title" leaves double spaces
+    that would defeat the substring check."""
+    cleaned = "".join(ch.lower() for ch in s if ch.isalnum() or ch.isspace())
+    return " ".join(cleaned.split())
+
+
+_AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".oga",
+               ".opus", ".aac")
+
+
+def bootstrap_cache_from_folder(source_tracks: list[dict],
+                                 folder: str | Path) -> dict | None:
+    """Synthesise a cache for a folder that was downloaded BEFORE the
+    sync system existed (or on another machine): fuzzy-match each source
+    track against the audio files already sitting in ``folder``.
+
+    Matched tracks then behave like ``kept`` in compute_diff, so a
+    re-download of the same playlist only fetches the genuinely new
+    songs instead of everything. Returns None when nothing matches
+    (caller falls back to a full download)."""
+    folder_p = Path(folder)
+    if not folder_p.is_dir():
+        return None
+    by_stem: dict[str, str] = {}
+    for p in folder_p.iterdir():
+        if p.is_file() and p.suffix.lower() in _AUDIO_EXTS:
+            by_stem[_norm(p.stem)] = str(p)
+    if not by_stem:
+        return None
+    tracks: list[CachedTrack] = []
+    for t in source_tracks:
+        sid = t.get("spotify_id")
+        if not sid:
+            continue
+        needle = _norm(f"{t.get('artist', '')} {t.get('title', '')}").strip()
+        if not needle:
+            continue
+        for stem, path in by_stem.items():
+            if needle in stem or stem in needle:
+                tracks.append({"spotify_id": sid,
+                               "artist": t.get("artist", ""),
+                               "title": t.get("title", ""),
+                               "filepath": path})
+                break
+    if not tracks:
+        return None
+    return {"playlist_id": "", "playlist_name": "",
+            "folder": str(folder_p), "bootstrapped": True,
+            "tracks": tracks}
+
+
 # ── Disk-side helpers ────────────────────────────────────────────
+
+def write_m3u(folder: str | Path, playlist_name: str,
+              tracks: list[CachedTrack]) -> Path | None:
+    """Materialise the Spotify playlist ORDER on disk as a .m3u8.
+
+    Filenames alone can't carry the order (yt-dlp names files
+    "Artist - Title", so any folder view sorts alphabetically) —
+    Rekordbox / Engine / VLC import this file instead. Overwritten on
+    every sync; entries whose file is gone are skipped. Never touches
+    the audio files themselves."""
+    safe = re.sub(r'[<>:"/\\|?*]+', "_", playlist_name).strip() or "playlist"
+    p = Path(folder) / f"{safe}.m3u8"
+    folder_res = Path(folder).resolve()
+    lines = ["#EXTM3U"]
+    for t in tracks:
+        fp = t.get("filepath") or ""
+        if not fp or not os.path.isfile(fp):
+            continue
+        try:
+            ref = str(Path(fp).resolve().relative_to(folder_res))
+        except ValueError:
+            ref = str(fp)
+        lines.append(f"#EXTINF:-1,{t.get('artist', '')} - "
+                     f"{t.get('title', '')}")
+        lines.append(ref)
+    try:
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return p
+    except OSError as e:
+        log_warning(f"playlist_sync.write_m3u {p}: {e}")
+        return None
+
 
 def delete_files(tracks: list[CachedTrack]) -> tuple[int, int]:
     """Delete `tracks` files from disk. Returns (deleted, failed).
@@ -200,11 +288,8 @@ def merge_after_download(cache: dict | None,
     cached_by_id = {t["spotify_id"]: t
                     for t in (cache or {}).get("tracks", [])}
 
-    # Index downloaded paths by lowercased "<artist> <title>" stem so we
-    # can match a Spotify track to its yt-dlp-produced filename.
-    def _norm(s: str) -> str:
-        return "".join(ch.lower() for ch in s if ch.isalnum() or ch.isspace())
-
+    # Index downloaded paths by the shared fuzzy key so we can match a
+    # Spotify track to its yt-dlp-produced filename.
     by_stem: dict[str, str] = {}
     for p in downloaded_paths:
         stem = _norm(Path(p).stem)

@@ -23,6 +23,7 @@ from app.config import COLORS
 from app.engine import player
 from app.engine.library import (
     get_connection, all_tracks, find_transitions, transition_score,
+    transition_score_breakdown,
 )
 from app.logger import log_error
 from app.ui.deck import DeckWidget
@@ -38,6 +39,8 @@ class MixerPage(ctk.CTkFrame):
         self._selected: dict | None = None         # current Deck A
         self._b_track: dict | None = None          # current Deck B
         self._transitions: list[tuple[dict, float]] = []
+        self._tx_verdicts: dict[str, tuple[str, float | None]] = {}
+        self._key_binds: list[str] = []
         self._build_ui()
 
     def _build_ui(self):
@@ -125,7 +128,8 @@ class MixerPage(ctk.CTkFrame):
             [("score", "Score", 60),
              ("title", "Title", 240),
              ("bpm",   "BPM",    60),
-             ("cam",   "Cam",    60)],
+             ("cam",   "Cam",    60),
+             ("l4",    "L4",     54)],
             on_select=lambda rows: self._load_b(rows[0]) if rows else None,
             on_double_click=lambda row: self._show_breakdown(row),
             height=12,
@@ -175,10 +179,14 @@ class MixerPage(ctk.CTkFrame):
         # Hint label — pinned just above the feedback row
         ctk.CTkLabel(
             right,
-            text="Double-clic sur une transition pour voir le détail "
-                 "du score (key / BPM / audio / co-occurrence…)",
+            text="Double-clic : détail du score  ·  F = 👍  ·  D = 👎  ·  "
+                 "X = annuler le vote",
             font=font(10), text_color=COLORS["text_dim"]
         ).pack(side="bottom", anchor="w", padx=12, pady=(0, 4))
+
+        # « L4 doute » — packed on demand by _update_doubt_panel();
+        # bottom-packed after the hint so it stacks just above it.
+        self._doubt_frame = ctk.CTkFrame(right, fg_color="transparent")
 
         # NOW pack the table — fills whatever vertical space is left
         # above the hint + feedback row. Auto-resizes when the user
@@ -217,6 +225,8 @@ class MixerPage(ctk.CTkFrame):
         self.xfade = None
         self._decks_built = False
 
+    _VOTE_KEY_SEQS = ("<KeyPress-f>", "<KeyPress-d>", "<KeyPress-x>")
+
     def on_show(self):
         # Defer DB load so the page paints first
         self.after_idle(lambda: threading.Thread(
@@ -224,6 +234,7 @@ class MixerPage(ctk.CTkFrame):
         # Build the dual decks lazily — they're heavy (~26 CTk widgets total)
         if not self._decks_built:
             self.after_idle(self._build_decks)
+        self._bind_vote_keys()
 
     def on_hide(self):
         # Stop both decks when the user navigates away — otherwise audio
@@ -233,6 +244,38 @@ class MixerPage(ctk.CTkFrame):
             player.stop("B")
         except Exception:
             pass
+        self._unbind_vote_keys()
+
+    def _bind_vote_keys(self):
+        """F = 👍, D = 👎, X = clear — active only while the Mixer page
+        is shown; ignored when the focus is in a text entry."""
+        if self._key_binds:
+            return
+        top = self.winfo_toplevel()
+        self._key_binds = [
+            top.bind(seq, lambda e, v=val: self._vote_key(e, v), add="+")
+            for seq, val in zip(self._VOTE_KEY_SEQS, (1, -1, 0))
+        ]
+
+    def _unbind_vote_keys(self):
+        top = self.winfo_toplevel()
+        for seq, fid in zip(self._VOTE_KEY_SEQS, self._key_binds):
+            try:
+                top.unbind(seq, fid)
+            except Exception:
+                pass
+        self._key_binds = []
+
+    def _vote_key(self, event, value: int):
+        try:
+            cls = event.widget.winfo_class()
+        except Exception:
+            cls = ""
+        if cls in ("Entry", "TEntry", "Text", "TCombobox"):
+            return
+        if not self._selected or not self._b_track:
+            return
+        self._vote(value)
 
     def _build_decks(self):
         if self._decks_built:
@@ -384,7 +427,15 @@ class MixerPage(ctk.CTkFrame):
         except Exception as e:
             log_error("find_transitions failed", e)
             transitions = []
-        self.after(0, lambda tx=transitions: self._render_transitions(tx))
+        verdicts: dict[str, tuple[str, float | None]] = {}
+        for t, _s in transitions:
+            try:
+                bd = transition_score_breakdown(track, t)
+                verdicts[t["path"]] = (bd["l4_verdict"], bd["l4_delta"])
+            except Exception:
+                verdicts[t["path"]] = ("absent", None)
+        self.after(0, lambda tx=transitions, v=verdicts:
+                   self._render_transitions(tx, v))
 
     def _show_breakdown(self, row: tuple):
         """Modal popup explaining how this transition scored what it
@@ -398,12 +449,11 @@ class MixerPage(ctk.CTkFrame):
             None)
         if not match:
             return
-        from app.engine.library import transition_score_breakdown
         bd = transition_score_breakdown(self._selected, match)
 
         win = ctk.CTkToplevel(self)
         win.title("Score de transition — détail")
-        win.geometry("520x420")
+        win.geometry("520x460")
         win.configure(fg_color=COLORS["bg_dark"])
         win.transient(self.winfo_toplevel())
         try:
@@ -421,7 +471,26 @@ class MixerPage(ctk.CTkFrame):
             text=f"{(self._selected.get('title') or '?')[:40]}  →  "
                  f"{(match.get('title') or '?')[:40]}",
             font=font(11), text_color=COLORS["text_dim"]
-        ).pack(anchor="w", padx=20, pady=(0, 12))
+        ).pack(anchor="w", padx=20, pady=(0, 4))
+
+        verdict = bd.get("l4_verdict", "absent")
+        delta = bd.get("l4_delta")
+        if verdict == "dispute":
+            v_txt = (f"⚠ L4 conteste l'heuristique : {delta:+.1f} pts "
+                     f"(heuristique {bd.get('heuristic_total', 0):.0f}/100)")
+            v_col = COLORS["warning"]
+        elif verdict == "agree":
+            v_txt = f"L4 renforce l'heuristique ({delta:+.1f} pts)"
+            v_col = COLORS["success"]
+        elif verdict == "neutral":
+            v_txt = f"L4 neutre ({delta:+.1f} pts)"
+            v_col = COLORS["text_dim"]
+        else:
+            v_txt = "L4 absent — modèle non entraîné"
+            v_col = COLORS["text_dim"]
+        ctk.CTkLabel(
+            win, text=v_txt, font=font(11, "bold"), text_color=v_col
+        ).pack(anchor="w", padx=20, pady=(0, 10))
 
         body = ctk.CTkFrame(win, fg_color=COLORS["bg_card"],
                              corner_radius=8)
@@ -499,17 +568,20 @@ class MixerPage(ctk.CTkFrame):
             None,
         )
         if match:
-            if not self._decks_built:
-                self._build_decks()
-            self.deck_b.load_track(match)
-            self._b_track = match
-            # Sync to A is now possible
-            try:
-                self.sync_btn.configure(state="normal")
-            except Exception:
-                pass
-            # Refresh the feedback panel for this new (A, B) pair
-            self._refresh_feedback_state()
+            self._set_deck_b(match)
+
+    def _set_deck_b(self, match: dict):
+        """Load a transition target on Deck B (from the list or the
+        doubt panel) and refresh sync + feedback state."""
+        if not self._decks_built:
+            self._build_decks()
+        self.deck_b.load_track(match)
+        self._b_track = match
+        try:
+            self.sync_btn.configure(state="normal")
+        except Exception:
+            pass
+        self._refresh_feedback_state()
 
     def _vote(self, value: int) -> None:
         """Persist a 👍 / 👎 / clear on the currently-loaded (A, B) pair
@@ -652,17 +724,24 @@ class MixerPage(ctk.CTkFrame):
         # Re-arm the periodic refresh
         self.after(500, self._refresh_sync_indicator)
 
-    def _render_transitions(self, transitions: list[tuple[dict, float]]):
+    def _render_transitions(self, transitions: list[tuple[dict, float]],
+                            verdicts: dict | None = None):
         # Cache for _load_b so we don't have to re-query the DB
         self._transitions = list(transitions)
+        self._tx_verdicts = dict(verdicts or {})
         rows = []
         tags = []
         for t, score in transitions:
+            v, delta = self._tx_verdicts.get(t["path"], ("absent", None))
+            l4_cell = ""
+            if v == "dispute" and delta is not None:
+                l4_cell = f"{'▲' if delta > 0 else '▼'} {delta:+.0f}"
             rows.append((
                 f"{score:.0f}",
                 (t["title"] or "?")[:60],
                 f"{(t['bpm'] or 0):.0f}",
                 t["camelot"] or "?",
+                l4_cell,
             ))
             if score >= 80:
                 tags.append(("ok",))
@@ -671,3 +750,35 @@ class MixerPage(ctk.CTkFrame):
             else:
                 tags.append(("err",))
         self.tx_table.set_rows(rows, row_tags=tags)
+        self._update_doubt_panel()
+
+    def _update_doubt_panel(self):
+        """Surface the top disputed transitions (L4 vs heuristic) as
+        one-click vote targets — the highest-value feedback labels."""
+        for w in self._doubt_frame.winfo_children():
+            w.destroy()
+        disputes = []
+        for t, _s in self._transitions:
+            v, delta = self._tx_verdicts.get(t["path"], ("absent", None))
+            if v == "dispute" and delta is not None:
+                disputes.append((t, delta))
+        if not disputes:
+            self._doubt_frame.pack_forget()
+            return
+        ctk.CTkLabel(
+            self._doubt_frame, text="🤔 L4 doute — tranche :",
+            font=font(10, "bold"),
+            text_color=COLORS["warning"]).pack(side="left", padx=(0, 6))
+        for t, delta in disputes[:3]:
+            arrow = "▲" if delta > 0 else "▼"
+            ctk.CTkButton(
+                self._doubt_frame,
+                text=f"{arrow} {(t['title'] or '?')[:22]} ({delta:+.0f})",
+                height=22, font=font(9),
+                fg_color=COLORS["bg_input"],
+                hover_color=COLORS["bg_card"],
+                text_color=COLORS["text"],
+                command=lambda m=t: self._set_deck_b(m)
+            ).pack(side="left", padx=2)
+        self._doubt_frame.pack(side="bottom", fill="x", padx=12,
+                                pady=(0, 2))

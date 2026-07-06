@@ -42,6 +42,30 @@ def should_write_tags() -> bool:
     return bool(cfg.get("write_tags_to_files", False))
 
 
+# Per-format opt-in on top of the master toggle. After the 2026-06 WAV
+# corruption regression, non-MP3 containers stay read-only unless the
+# user flips the matching flag explicitly — even via the force path.
+_TAG_FORMAT_KEYS: dict[str, tuple[str, bool]] = {
+    ".mp3":  ("write_tags_mp3", True),
+    ".wav":  ("write_tags_wav", False),
+    ".flac": ("write_tags_flac", False),
+    ".m4a":  ("write_tags_m4a", False),
+    ".mp4":  ("write_tags_m4a", False),
+    ".aac":  ("write_tags_m4a", False),
+    ".ogg":  ("write_tags_ogg", False),
+    ".oga":  ("write_tags_ogg", False),
+    ".opus": ("write_tags_ogg", False),
+}
+
+
+def should_write_tags_for(ext: str) -> bool:
+    """Per-format gate for tag writes. Unknown extensions are refused."""
+    key, default = _TAG_FORMAT_KEYS.get(ext.lower(), (None, False))
+    if key is None:
+        return False
+    return bool(load_config().get(key, default))
+
+
 def get_music_roots() -> list[str]:
     """All configured music folders (primary + extras + download folder).
 

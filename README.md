@@ -51,15 +51,22 @@ share a number on the Camelot wheel.
   crossfader, hot-cue keyboard shortcuts (`1`-`8`, `Space`, `Home`)
 - ⬇️ **YouTube / SoundCloud / Spotify download** — `yt-dlp` with
   Cloudflare bypass, Spotify playlist resolution via the API, smart
-  re-sync (diff added/removed instead of full re-download)
+  re-sync (diff added/removed instead of full re-download), manual
+  track selection before any download fires, folder bootstrap (a
+  playlist downloaded before the sync system existed is recognised
+  from its files — only new songs download), and a `.m3u8` written in
+  the exact Spotify order on every sync
 - 🔗 **Embedded WebView2 browser** — log in to Spotify / YouTube
   inside the app, persistent sessions via Windows Credential Manager
 - 🛡 **Production-grade integrity** — daily `VACUUM INTO` DB snapshots,
   trash + 30-day undo for bulk deletes, log rotation, force-snapshot
   before every destructive operation
-- 🩹 **WAV/FLAC/M4A repair tool** — undoes legacy ID3-prefix corruption
-  (where mutagen `ID3.save()` silently corrupted non-MP3 containers),
-  audit history in `data/repair_history.json`
+- 🩹 **WAV/FLAC/M4A repair tool v2** — undoes BOTH legacy corruptions:
+  ID3 bytes prepended before the container magic (v1) and the `id3 `
+  chunk appended after `data` that makes Rekordbox 7 / Engine DJ refuse
+  WAV files (v2 — RIFF chunk walker, reversible: the cut tail is kept
+  in `data/repair_tails/`), audit history in `data/repair_history.json`.
+  Tag writes are now **verified-or-reverted** with per-format opt-in.
 - 📤 **Export to Rekordbox XML, Serato `.crate`, M3U8** — your work
   travels with you
 - ⌨️ **Pro-DJ UX** — resizable panels, virtualised `ttk.Treeview`
@@ -168,7 +175,7 @@ ultimate-dj/
 │       ├── browser.py        ← WebView2 reparenting (Win32 SetParent)
 │       └── …
 │
-├── tests/test_smoke.py       ← 11 unit + integration tests
+├── tests/                    ← 43 tests (engine, repair v2, smoke)
 ├── data/                     ← runtime state (gitignored)
 │   ├── dj_library.db         ← SQLite WAL
 │   ├── db_backups/           ← daily VACUUM INTO snapshots
@@ -254,13 +261,71 @@ shows the contribution from each.
 - Boot time slashed by deferring heavy module imports + lazy ActivityTray
   + auto-scan librosa import moved to worker thread (no UI freeze)
 
+### Done in v1.4 → v1.5
+- **WAV repair v2** — RIFF chunk walker (`inspect_chunks`) catches the
+  trailing-`id3 ` corruption that v1's prefix detector calls "ok";
+  `repair_trailing` cuts the tail + fixes the RIFF size atomically, the
+  removed bytes are saved under `data/repair_tails/` so `undo_trailing`
+  restores byte-identical files. Dry-run on the real library: 363/451
+  flagged, 0 false positives. Legit trailing chunks (`LIST`, `cue `…)
+  are flagged `review` and never touched.
+- **Write guard rails** — per-format tag-write opt-in
+  (`write_tags_wav/flac/m4a`, all default OFF, survive `force=True`),
+  magic-byte pre-flight on every non-MP3, and WAV writes are
+  verified-or-reverted (snapshot → save → chunk re-walk → byte-identical
+  restore if the layout is no longer clean). The active corruption
+  vector (mutagen's WAVE wrapper appends `id3 ` after `data`) is
+  neutralised.
+- **Mixer: L4-vs-heuristic verdict** — the breakdown popup now shows
+  whether the Siamese model agrees, disputes (≥ 6 pts against the
+  heuristic) or is neutral on each transition; disputed suggestions get
+  a ▲/▼ marker in the list and a "L4 doute — tranche" panel turns them
+  into one-click vote targets (active learning).
+- **Feedback UX** — keyboard votes (`F` = 👍, `D` = 👎, `X` = clear)
+  while the Mixer is focused; Settings shows votes-since-last-train vs
+  the auto-retrain threshold.
+- **Auto-retrain after rebuild** — "Reconstruire la matrice" now fires
+  a background L4 retrain when pairs actually changed (opt-in gated).
+- **Spotify playlist order preserved** — the download queue follows the
+  playlist order (a set-difference used to scramble it) and every sync
+  writes `<playlist>.m3u8` next to the files in the exact source order
+  (Rekordbox/Engine/VLC importable, no audio file renamed).
+- **Manual track selection** — before any playlist download fires, a
+  dialog lists every track with checkboxes (filter, live counter,
+  all/none) so a 150-song playlist can be trimmed in one pass.
+- **Folder bootstrap re-sync** — a folder downloaded before the sync
+  system existed is recognised by fuzzy-matching its files against the
+  playlist; matched tracks are skipped, only new songs download.
+- **Downloader unblocked** — the 2025-era `player_client: ["web"]` pin
+  and browser-cookie attachment now hit YouTube's PO-token wall and
+  killed 100 % of downloads ("Requested format is not available");
+  both removed, verified end-to-end.
+- **setlist.fm fallback skeleton** (`engine/setlist_fm.py`) — REST
+  client (stdlib only) mapping setlists into the cooccurrence cache
+  format, ready as Plan B for 1001tracklists rate-limits (one fired
+  2026-07-05); needs a free API key in `setlistfm_api_key`.
+- **Tests 12 → 43** — repair v2 (16), parser fixture, matcher
+  precision, L4-None, playlist diff order, m3u, bootstrap, resolve
+  regression, write guards. Plus a data-path pass adding 11
+  `log_warning` to previously silent swallows.
+- **CI** — GitHub Actions (`windows-latest`): ruff (non-blocking for
+  now) + pytest on every push/PR.
+- **Living project map** — `docs/PROJECT_MAP.md` (subsystems, DB, AI
+  layers, deep relations, progress board + journal) with an offline 3D
+  interactive twin (`docs/PROJECT_MAP.html`) including a quest tree
+  with XP, dependencies and blockers.
+
 ### Next up
-- 20+ engine-level tests (currently 12)
-- `pip-compile` lockfile + `ruff` + pre-commit
-- L4 model evaluation harness — back-test the trained model against
-  held-out 1001tracklists pairs and report accuracy / AUC
-- Continuous-learning auto-trigger — fire `enrich_corpus()` in the
-  background whenever the user adds ≥ N new tracks to their library
+- Run the v2 repair on the 363 flagged WAVs (10-file Rekordbox-verified
+  pilot first — the tool ships, the click is the owner's)
+- Corpus growth to 1 500 co-occurrence pairs (downloads finally work;
+  batch resumable)
+- Split `app/ui/settings.py` (1 959 LOC) into a `settings/` package
+- L4 model evaluation harness — back-test against held-out pairs,
+  report accuracy / AUC
+- Installer + code signing (SmartScreen) once CI is green
+- Continuous-learning auto-trigger — fire `enrich_corpus()` when ≥ N
+  new tracks land in the library
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
 
@@ -273,7 +338,7 @@ contributions:
 
 - New audio embedding backends (any pretrained music encoder)
 - Beat-grid alignment for the BPM-sync feature
-- Tests! There are only 11 smoke tests for ~7 500 LOC.
+- Tests! 43 today for ~18 000 LOC — the UI layer is still untested.
 - Cross-platform support (macOS audio, Linux WebView fallback)
 - Translations (currently French-leaning UI strings)
 

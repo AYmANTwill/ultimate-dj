@@ -176,7 +176,10 @@ def scrape_1001tracklists(query: str = "", max_results: int = 50) -> list[dict]:
         if results:
             _save_setlist_cache(results)
 
-    except Exception:
+    except Exception as e:
+        from app.logger import log_warning
+        log_warning(f"discovery: live scrape failed, serving cached "
+                    f"setlists: {e}")
         results = _load_setlist_cache()
 
     return results[:max_results]
@@ -203,7 +206,9 @@ def spotify_recommend(seed_tracks: list[str], limit: int = 20) -> list[dict]:
         from spotipy.oauth2 import SpotifyClientCredentials
         sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
             client_id=cid, client_secret=secret))
-    except Exception:
+    except Exception as e:
+        from app.logger import log_warning
+        log_warning(f"discovery: Spotify client init failed: {e}")
         return []
 
     # Find Spotify track IDs for seeds
@@ -241,7 +246,9 @@ def spotify_recommend(seed_tracks: list[str], limit: int = 20) -> list[dict]:
                 "source": "spotify_recommend",
             })
         return tracks
-    except Exception:
+    except Exception as e:
+        from app.logger import log_warning
+        log_warning(f"discovery: Spotify recommendations failed: {e}")
         return []
 
 

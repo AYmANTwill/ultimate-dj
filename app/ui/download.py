@@ -652,6 +652,14 @@ class DownloadPage(ctk.CTkFrame):
         from app.engine import playlist_sync
         playlist_id = spotify.url_id(url)
         cache = playlist_sync.load_cache(playlist_id, out) if playlist_id else None
+        # Folder downloaded before the sync system existed (no cache) —
+        # recognise the files already there so only NEW songs download.
+        bootstrapped = False
+        if cache is None:
+            cache = playlist_sync.bootstrap_cache_from_folder(
+                source_tracks, out)
+            bootstrapped = cache is not None
+
         diff = playlist_sync.compute_diff(source_tracks, cache)
 
         decision = {"proceed": True, "delete_removed": False}
@@ -661,7 +669,8 @@ class DownloadPage(ctk.CTkFrame):
             # on a threading.Event until they answer.
             import threading
             ev = threading.Event()
-            self.after(0, lambda: self._ask_resync(name, diff, decision, ev))
+            self.after(0, lambda: self._ask_resync(
+                name, diff, decision, ev, bootstrapped=bootstrapped))
             ev.wait()
             if not decision["proceed"]:
                 self.after(0, lambda: self._set_status(
@@ -684,11 +693,27 @@ class DownloadPage(ctk.CTkFrame):
             self.after(0, lambda: self._set_running(False))
             return
 
+        # Manual track selection — playlists can run 100+ songs; let the
+        # user untick what they don't want before a single download fires.
+        if len(tracks) > 1:
+            import threading
+            sel = {"selected": None}
+            ev_sel = threading.Event()
+            self.after(0, lambda: self._ask_track_selection(
+                name, tracks, sel, ev_sel))
+            ev_sel.wait()
+            if not sel["selected"]:
+                self.after(0, lambda: self._set_status(
+                    "Téléchargement annulé.", "text_dim"))
+                self.after(0, lambda: self._set_running(False))
+                return
+            tracks = sel["selected"]
+
         self.after(0, lambda: self._build_track_list(name, tracks))
         skip_msg = (f" · {len(diff['kept'])} déjà OK"
                      if diff["kept"] else "")
         self.after(0, lambda: self._set_status(
-            f"À télécharger : {len(tracks)} nouveaux{skip_msg}"))
+            f"À télécharger : {len(tracks)} sélectionnés{skip_msg}"))
 
         ok_count = 0
         fail_count = 0
@@ -755,8 +780,127 @@ class DownloadPage(ctk.CTkFrame):
 
         self.after(0, _finish)
 
+    def _ask_track_selection(self, playlist_name: str, tracks: list[dict],
+                              sel: dict, ev) -> None:
+        """Modal listing the to-download tracks with checkboxes (all on)
+        so the user can trim a 100+-song playlist before anything hits
+        yt-dlp. Sets sel['selected'] (list, or None on cancel) and
+        signals the worker via Event."""
+        win = ctk.CTkToplevel(self)
+        win.title("Choisir les tracks à télécharger")
+        win.geometry("640x600")
+        win.configure(fg_color=COLORS["bg_dark"])
+        win.transient(self.winfo_toplevel())
+        try:
+            win.grab_set()
+        except Exception:
+            pass
+
+        ctk.CTkLabel(
+            win, text=f"« {playlist_name[:45]} »",
+            font=font(16, "bold"),
+            text_color=COLORS["accent"]
+        ).pack(anchor="w", padx=20, pady=(18, 2))
+        count_lbl = ctk.CTkLabel(
+            win, text="", font=font(11), text_color=COLORS["text_dim"])
+        count_lbl.pack(anchor="w", padx=20, pady=(0, 8))
+
+        top_bar = ctk.CTkFrame(win, fg_color="transparent")
+        top_bar.pack(fill="x", padx=20, pady=(0, 6))
+        filter_entry = ctk.CTkEntry(
+            top_bar, placeholder_text="Filtrer…", height=28,
+            fg_color=COLORS["bg_input"], border_color=COLORS["bg_input"],
+            text_color=COLORS["text"])
+        filter_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        rows: list[tuple[dict, object, object]] = []   # (track, var, widget)
+
+        def _refresh_count():
+            n = sum(1 for _t, v, _w in rows if v.get())
+            count_lbl.configure(
+                text=f"{n} / {len(tracks)} sélectionnés")
+            try:
+                go_btn.configure(
+                    text=f"Télécharger {n}",
+                    state="normal" if n else "disabled")
+            except Exception:
+                pass
+
+        def _set_all(value: bool):
+            for _t, v, _w in rows:
+                v.set(value)
+            _refresh_count()
+
+        ctk.CTkButton(
+            top_bar, text="Tout", width=60, height=28, font=font(11),
+            fg_color=COLORS["bg_card"], hover_color=COLORS["bg_input"],
+            text_color=COLORS["text"],
+            command=lambda: _set_all(True)).pack(side="left", padx=2)
+        ctk.CTkButton(
+            top_bar, text="Rien", width=60, height=28, font=font(11),
+            fg_color=COLORS["bg_card"], hover_color=COLORS["bg_input"],
+            text_color=COLORS["text"],
+            command=lambda: _set_all(False)).pack(side="left", padx=2)
+
+        scroll = ctk.CTkScrollableFrame(
+            win, fg_color=COLORS["bg_card"], corner_radius=10)
+        scroll.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+
+        for i, t in enumerate(tracks, 1):
+            var = ctk.BooleanVar(value=True)
+            dur = spotify.format_duration(t.get("duration", 0))
+            cb = ctk.CTkCheckBox(
+                scroll,
+                text=f"{i:>3}.  {t.get('artist', '?')[:32]} — "
+                     f"{t.get('title', '?')[:48]}   ({dur})",
+                variable=var, font=font(11),
+                text_color=COLORS["text"],
+                checkbox_height=16, checkbox_width=16,
+                fg_color=COLORS["accent"],
+                command=_refresh_count)
+            cb.pack(anchor="w", padx=8, pady=1)
+            rows.append((t, var, cb))
+
+        def _apply_filter(*_):
+            q = filter_entry.get().strip().lower()
+            for t, _v, w in rows:
+                hay = f"{t.get('artist', '')} {t.get('title', '')}".lower()
+                if not q or q in hay:
+                    w.pack(anchor="w", padx=8, pady=1)
+                else:
+                    w.pack_forget()
+        filter_entry.bind("<KeyRelease>", _apply_filter)
+
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(fill="x", padx=20, pady=(0, 16), side="bottom")
+
+        def _cancel():
+            sel["selected"] = None
+            ev.set()
+            win.destroy()
+
+        def _go():
+            sel["selected"] = [t for t, v, _w in rows if v.get()]
+            ev.set()
+            win.destroy()
+
+        ctk.CTkButton(
+            bar, text="Annuler", width=110, height=36,
+            fg_color=COLORS["bg_card"], hover_color=COLORS["bg_input"],
+            text_color=COLORS["text"], command=_cancel,
+        ).pack(side="right", padx=4)
+        go_btn = ctk.CTkButton(
+            bar, text=f"Télécharger {len(tracks)}", width=180, height=36,
+            font=font(13, "bold"),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["bg_dark"], command=_go,
+        )
+        go_btn.pack(side="right", padx=4)
+        win.protocol("WM_DELETE_WINDOW", _cancel)
+        _refresh_count()
+
     def _ask_resync(self, playlist_name: str, diff: dict,
-                     decision: dict, ev) -> None:
+                     decision: dict, ev, *, bootstrapped: bool = False) -> None:
         """Modal that asks the user how to handle a re-sync. Sets
         ``decision`` in place and signals the worker via Event."""
         win = ctk.CTkToplevel(self)
@@ -777,8 +921,12 @@ class DownloadPage(ctk.CTkFrame):
 
         ctk.CTkLabel(
             win,
-            text=("Cette playlist a déjà été téléchargée dans ce "
-                   "dossier. Voilà ce qui a changé depuis :"),
+            text=(("Ce dossier contient déjà une partie de cette "
+                   "playlist (fichiers reconnus par leur nom). "
+                   "Seuls les manquants seront téléchargés :")
+                  if bootstrapped else
+                  ("Cette playlist a déjà été téléchargée dans ce "
+                   "dossier. Voilà ce qui a changé depuis :")),
             font=font(11), text_color=COLORS["text_dim"],
             wraplength=520, justify="left",
         ).pack(anchor="w", padx=20, pady=(0, 12))
@@ -895,6 +1043,14 @@ class DownloadPage(ctk.CTkFrame):
                 url, playlist_id, name, folder, list(merged.values()))
         except Exception as e:
             log_error("playlist_sync.save_cache failed", e)
+
+        # Materialise the Spotify ORDER next to the files — merged is
+        # already in source-playlist order (merge_after_download walks
+        # source_tracks; kept overrides replace in place).
+        m3u = playlist_sync.write_m3u(folder, name, list(merged.values()))
+        if m3u:
+            self.after(0, lambda pth=m3u: self._log(
+                f"♪  Ordre Spotify écrit : {pth.name}"))
 
     def _download_finished(self, paths, codec="mp3"):
         self.progress_bar.set(1.0)

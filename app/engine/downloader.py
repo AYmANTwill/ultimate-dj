@@ -68,9 +68,12 @@ def _yt_base_opts() -> dict:
     if _BASE_CACHE is not None:
         return dict(_BASE_CACHE)
 
-    opts: dict = {
-        "extractor_args": {"youtube": {"player_client": ["web"]}},
-    }
+    # Do NOT pin player_client. The old ["web"] pin (2025 workaround for
+    # signature/403) now yields ZERO formats — YouTube's web client
+    # requires PO tokens — which made every download fail with
+    # "Requested format is not available". yt-dlp's default client mix
+    # is maintained upstream and picks a working client per video.
+    opts: dict = {}
     node = get_node()
     if node:
         node_dir = os.path.dirname(node)
@@ -78,14 +81,10 @@ def _yt_base_opts() -> dict:
             os.environ["PATH"] = node_dir + os.pathsep + os.environ.get("PATH", "")
         opts["js_runtimes"] = {"node": {"path": node}}
 
-    for browser in ("brave", "edge", "chrome", "firefox"):
-        try:
-            from yt_dlp.cookies import extract_cookies_from_browser
-            extract_cookies_from_browser(browser)
-            opts["cookiesfrombrowser"] = (browser,)
-            break
-        except Exception:
-            continue
+    # No cookiesfrombrowser either (same 2025 workaround family): with
+    # cookies attached yt-dlp skips the clients that don't support them
+    # and lands back on the PO-token-walled web client — proven to fail
+    # format selection on every video. Guest access downloads fine.
 
     _BASE_CACHE = opts
     return dict(opts)

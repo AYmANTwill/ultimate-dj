@@ -158,5 +158,8 @@ def _decode_cues(track: dict) -> list[dict]:
     import json
     try:
         return list(json.loads(raw))
-    except Exception:
+    except Exception as e:
+        from app.logger import log_warning
+        log_warning(f"export: corrupt cue_points for "
+                    f"{track.get('path', '?')}: {e}")
         return []

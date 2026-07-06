@@ -12,7 +12,8 @@ import mutagen
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, TBPM, TKEY, ID3NoHeaderError
 
-from app.config import CAMELOT_MAP, load_config, should_write_tags
+from app.config import (CAMELOT_MAP, load_config, should_write_tags,
+                        should_write_tags_for)
 from app.logger import log_warning
 
 # Krumhansl-Kessler key profiles
@@ -112,7 +113,9 @@ def get_duration(path: str) -> float:
     # Last-resort fallback for MP3s that mutagen.File somehow refuses
     try:
         return round(MP3(path).info.length, 1)
-    except Exception:
+    except Exception as e:
+        log_warning(f"get_duration: unreadable {Path(path).name} "
+                    f"— duration set to 0: {e}")
         return 0.0
 
 
@@ -190,6 +193,20 @@ def write_tags(path: str, bpm: float, key: str, *, force: bool = False):
         # Metadata stays in the SQLite library only.
         return
     ext = Path(path).suffix.lower()
+    if not should_write_tags_for(ext):
+        # Per-format gate — deliberately survives force=True for the
+        # risky containers (post-corruption-regression policy).
+        log_warning(f"write_tags refused for {Path(path).name}: "
+                    f"format {ext or '?'} not opted-in in Settings")
+        return
+    if ext != ".mp3":
+        from app.engine import repair as _repair
+        magic = _repair._expected_magic(Path(path))
+        if (magic is None
+                or _repair._find_magic_offset(Path(path), magic) != 0):
+            log_warning(f"write_tags skipped {Path(path).name}: container "
+                        f"magic not at offset 0 — run Réparation first")
+            return
     bpm_int = int(round(float(bpm or 0)))
     key_str = (key or "").strip()
 
@@ -206,7 +223,17 @@ def write_tags(path: str, bpm: float, key: str, *, force: bool = False):
 
         elif ext == ".wav":
             # WAV files store ID3 inside an "id3 " RIFF chunk. Mutagen
-            # only writes that correctly via the WAVE wrapper.
+            # writes it AFTER the data chunk, which Rekordbox 7 /
+            # Engine DJ reject — so the write is verified-or-reverted:
+            # snapshot first, re-walk the chunks after save, restore the
+            # snapshot byte-identical if the layout is no longer clean.
+            from app.engine.repair import inspect_chunks
+            pre = inspect_chunks(path)
+            if pre["status"] != "ok":
+                log_warning(f"write_tags skipped {Path(path).name}: "
+                            f"WAV structure {pre['status']} — repair first")
+                return
+            snapshot = Path(path).read_bytes()
             from mutagen.wave import WAVE
             audio = WAVE(path)
             if audio.tags is None:
@@ -215,6 +242,12 @@ def write_tags(path: str, bpm: float, key: str, *, force: bool = False):
             if key_str:
                 audio.tags["TKEY"] = TKEY(encoding=3, text=[key_str])
             audio.save()
+            post = inspect_chunks(path)
+            if post["status"] != "ok":
+                Path(path).write_bytes(snapshot)
+                log_warning(
+                    f"write_tags reverted {Path(path).name}: save produced "
+                    f"{post['status']} — file restored byte-identical")
 
         elif ext == ".flac":
             from mutagen.flac import FLAC

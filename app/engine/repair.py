@@ -19,7 +19,10 @@ Background:
 Public API:
     inspect(path) -> dict        — diagnose without touching the file
     repair(path)  -> dict        — repair if needed, returns details
-    scan_folder(root, on_progress=None) -> dict — bulk repair
+    inspect_chunks(path) -> dict — v2: walk WAV chunks, spot trailing damage
+    repair_trailing(path) -> dict — v2: cut trailing garbage, fix RIFF size
+    undo_trailing(path, tail_file, riff_size_before) -> dict — reverse a v2 fix
+    scan_folder(root, on_progress=None) -> dict — bulk repair (v1 + v2 passes)
     history(limit=200) -> list[dict] — recent repair log entries
     purge_backups(root) -> int   — delete legacy .bak files
 
@@ -29,6 +32,7 @@ caller "ok" and no write happens).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -232,6 +236,193 @@ def repair(path: str | Path) -> dict:
     return info
 
 
+# ── v2: structural WAV damage — garbage AFTER the data chunk ─────
+# The 2026-06 regression: mutagen's WAVE wrapper appends an "id3 "
+# chunk after "data"; Rekordbox 7 / Engine DJ refuse the file. The v1
+# inspect() above can't see it (the RIFF magic IS at offset 0), so
+# this second pass walks the chunk list itself.
+
+_TAILS_DIR = DATA_DIR / "repair_tails"
+
+# Chunks that legitimately live after `data` in the wild. If the tail
+# contains ONLY those we flag `review` and refuse to cut — only
+# known-garbage tails are auto-repairable.
+_LEGIT_TRAILING_IDS = {b"LIST", b"cue ", b"smpl", b"fact", b"bext",
+                       b"PEAK", b"acid", b"inst"}
+
+_MAX_CHUNKS = 4096
+
+
+def inspect_chunks(path: str | Path) -> dict:
+    """WAV-only structural check — the counterpart of inspect() for
+    damage AFTER the data chunk.
+
+    Returns dict with keys:
+      status:   'ok' | 'trailing_garbage' | 'riff_size_mismatch' |
+                'review' | 'no_data_chunk' | 'not_wav' | 'error'
+      data_end: int — file offset just past the data chunk (0 if none)
+      trailing: list[{id, offset, size}] — chunks found after data
+      riff_size / file_size: header claim vs reality
+    """
+    p = Path(path)
+    out: dict = {"path": str(p), "kind": "trailing", "status": "ok",
+                 "file_size": 0, "riff_size": 0, "data_end": 0,
+                 "trailing": [], "message": ""}
+    try:
+        out["file_size"] = p.stat().st_size
+        with open(p, "rb") as f:
+            header = f.read(12)
+            if (len(header) < 12 or header[:4] != b"RIFF"
+                    or header[8:12] != b"WAVE"):
+                out["status"] = "not_wav"
+                out["message"] = "no RIFF/WAVE header at offset 0"
+                return out
+            out["riff_size"] = int.from_bytes(header[4:8], "little")
+            pos = 12
+            data_end = 0
+            for _ in range(_MAX_CHUNKS):
+                f.seek(pos)
+                head = f.read(8)
+                if len(head) < 8:
+                    break
+                cid = head[:4]
+                csize = int.from_bytes(head[4:8], "little")
+                payload_end = pos + 8 + csize + (csize % 2)
+                if data_end:
+                    out["trailing"].append(
+                        {"id": cid.decode("latin-1"), "offset": pos,
+                         "size": csize})
+                if cid == b"data" and not data_end:
+                    data_end = min(payload_end, out["file_size"])
+                pos = payload_end
+                if pos >= out["file_size"]:
+                    break
+    except OSError as e:
+        out["status"] = "error"
+        out["message"] = f"read failed: {e}"
+        return out
+
+    if not data_end:
+        out["status"] = "no_data_chunk"
+        out["message"] = "data chunk not found — refusing to touch"
+        return out
+    out["data_end"] = data_end
+
+    if out["trailing"]:
+        ids = {t["id"].encode("latin-1") for t in out["trailing"]}
+        names = ", ".join(sorted(t["id"] for t in out["trailing"]))
+        if ids <= _LEGIT_TRAILING_IDS:
+            out["status"] = "review"
+            out["message"] = (f"legitimate-looking chunk(s) after data "
+                              f"({names}) — left untouched")
+        else:
+            out["status"] = "trailing_garbage"
+            out["message"] = (f"{len(out['trailing'])} chunk(s) after data "
+                              f"({names}), "
+                              f"{out['file_size'] - data_end} bytes to cut")
+    elif out["riff_size"] != out["file_size"] - 8:
+        out["status"] = "riff_size_mismatch"
+        out["message"] = (f"RIFF header claims {out['riff_size']} bytes, "
+                          f"file has {out['file_size'] - 8}")
+    else:
+        out["message"] = "chunk layout is clean"
+    return out
+
+
+def repair_trailing(path: str | Path) -> dict:
+    """Cut everything past the data chunk and fix the RIFF size.
+
+    The removed tail is saved under ``data/repair_tails/`` and referenced
+    from ``repair_history.json`` — the repair is fully reversible via
+    undo_trailing() at a few KB of disk instead of a full file copy.
+    Refuses `review` files (legitimate trailing chunks). Idempotent.
+    """
+    info = inspect_chunks(path)
+    info["repaired"] = False
+    info["tail_file"] = None
+    if info["status"] not in ("trailing_garbage", "riff_size_mismatch"):
+        return info
+
+    p = Path(path)
+    data_end = int(info["data_end"])
+    tail_file: Path | None = None
+    tmp = p.with_suffix(p.suffix + ".tmp_repair")
+    try:
+        if info["file_size"] > data_end:
+            _TAILS_DIR.mkdir(parents=True, exist_ok=True)
+            with open(p, "rb") as f:
+                f.seek(data_end)
+                tail = f.read()
+            digest = hashlib.sha1(
+                str(p).encode("utf-8", "replace")).hexdigest()[:16]
+            tail_file = _TAILS_DIR / f"{digest}-{int(time.time())}.bin"
+            tail_file.write_bytes(tail)
+
+        with open(p, "rb") as src, open(tmp, "wb") as dst:
+            remaining = data_end
+            while remaining > 0:
+                chunk = src.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                dst.write(chunk)
+                remaining -= len(chunk)
+            dst.seek(4)
+            dst.write((data_end - 8).to_bytes(4, "little"))
+        os.replace(tmp, p)
+    except OSError as e:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        info["status"] = "error"
+        info["message"] = f"rewrite failed: {e}"
+        return info
+
+    damage_kind = info["status"]
+    info["repaired"] = True
+    info["tail_file"] = str(tail_file) if tail_file else None
+    info["timestamp"] = time.time()
+    info["status"] = "ok"
+    cut = info["file_size"] - data_end
+    info["message"] = (f"repaired — cut {cut} trailing bytes, "
+                       f"RIFF size set to {data_end - 8}")
+
+    _append_history({
+        "ts":               info["timestamp"],
+        "path":             str(p),
+        "kind":             damage_kind,
+        "cut_bytes":        cut,
+        "size_before":      info["file_size"],
+        "size_after":       data_end,
+        "riff_size_before": info["riff_size"],
+        "tail_file":        info["tail_file"],
+    })
+    return info
+
+
+def undo_trailing(path: str | Path, tail_file: str | Path,
+                  riff_size_before: int | None = None) -> dict:
+    """Reverse a repair_trailing(): re-append the saved tail and restore
+    the original RIFF size field. Byte-identical restoration."""
+    p, t = Path(path), Path(tail_file)
+    out = {"path": str(p), "restored": False, "message": ""}
+    if not t.exists():
+        out["message"] = f"tail file missing: {t}"
+        return out
+    try:
+        with open(p, "ab") as f:
+            f.write(t.read_bytes())
+        if riff_size_before is not None:
+            with open(p, "r+b") as f:
+                f.seek(4)
+                f.write(int(riff_size_before).to_bytes(4, "little"))
+        out["restored"] = True
+        out["message"] = "tail re-appended"
+    except OSError as e:
+        out["message"] = f"undo failed: {e}"
+    return out
+
+
 def purge_backups(root: str | Path) -> int:
     """Delete every ``*.bak`` left over from previous app versions.
 
@@ -283,6 +474,7 @@ def scan_folder(
     total = len(files)
 
     summary = {"scanned": total, "ok": 0, "corrupt": 0, "repaired": 0,
+               "trailing_corrupt": 0, "review": 0,
                "errors": 0, "details": [], "dry_run": dry_run}
 
     for i, p in enumerate(files, 1):
@@ -296,7 +488,8 @@ def scan_folder(
         else:
             info = repair(p)
         st = info["status"]
-        if st == "ok" and not info.get("repaired"):
+        v1_counted_ok = st == "ok" and not info.get("repaired")
+        if v1_counted_ok:
             summary["ok"] += 1
         elif st == "corrupt":
             summary["corrupt"] += 1
@@ -307,5 +500,31 @@ def scan_folder(
         else:
             summary["errors"] += 1
             summary["details"].append(info)
+
+        # v2 structural pass — only for WAVs whose prefix is sane
+        # (a prefix-corrupt file can't be chunk-walked reliably).
+        if p.suffix.lower() != ".wav" or st != "ok":
+            continue
+        chunk_info = inspect_chunks(p) if dry_run else repair_trailing(p)
+        cst = chunk_info["status"]
+        if chunk_info.get("repaired"):
+            summary["repaired"] += 1
+            summary["details"].append(chunk_info)
+            if v1_counted_ok:
+                summary["ok"] -= 1
+        elif cst in ("trailing_garbage", "riff_size_mismatch"):
+            summary["corrupt"] += 1
+            summary["trailing_corrupt"] += 1
+            summary["details"].append(chunk_info)
+            if v1_counted_ok:
+                summary["ok"] -= 1
+        elif cst == "review":
+            summary["review"] += 1
+            summary["details"].append(chunk_info)
+            if v1_counted_ok:
+                summary["ok"] -= 1
+        elif cst == "error":
+            summary["errors"] += 1
+            summary["details"].append(chunk_info)
 
     return summary

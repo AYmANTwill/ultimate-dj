@@ -153,20 +153,22 @@ def resolve_missing(conn: sqlite3.Connection,
     library" for cooc must also count as "in DB" here, otherwise we'd
     download duplicates.
     """
-    from app.engine.tracklists import match_with_library
+    from app.engine.tracklists import _is_id_placeholder, match_with_library
 
     seen: set[tuple[str, str]] = set()
     missing: list[dict] = []
     for s in scraped_sets:
-        matched = match_with_library(s, conn)
-        # match_with_library annotates each track with `local_path` when
-        # it found a hit; tracks without local_path are missing.
-        for t in matched.get("tracks", []):
-            if t.get("local_path"):
+        # match_with_library returns [{position, scraped, match, score}]
+        # — `match` is truthy when the track resolved to a local file.
+        for entry in match_with_library(s, conn):
+            if entry.get("match"):
                 continue
-            artist = (t.get("artist") or "").strip()
-            title = (t.get("title") or "").strip()
+            scraped = entry.get("scraped") or {}
+            artist = (scraped.get("artist") or "").strip()
+            title = (scraped.get("title") or "").strip()
             if not artist or not title:
+                continue
+            if _is_id_placeholder(artist, title):
                 continue
             key = (artist.lower(), title.lower())
             if key in seen:

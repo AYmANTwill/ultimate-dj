@@ -238,7 +238,30 @@ class SettingsPage(ctk.CTkFrame):
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_dim"],
             justify="left", wraplength=720
-        ).pack(anchor="w", padx=12, pady=(0, 10))
+        ).pack(anchor="w", padx=12, pady=(0, 4))
+
+        # Per-format opt-in (post-regression policy) : les containers
+        # non-MP3 restent read-only tant que leur case est décochée,
+        # même quand le master est ON. L'écriture WAV est de plus
+        # verified-or-reverted côté engine (analyzer.write_tags).
+        fmt_row = ctk.CTkFrame(interop_card, fg_color="transparent")
+        fmt_row.pack(fill="x", padx=12, pady=(0, 10))
+        ctk.CTkLabel(
+            fmt_row, text="Formats autorisés :  MP3 (toujours)",
+            font=ctk.CTkFont(size=10), text_color=COLORS["text_dim"]
+        ).pack(side="left", padx=(0, 12))
+        self._fmt_tag_vars: dict[str, ctk.BooleanVar] = {}
+        for label, cfg_key in (("WAV (risqué)", "write_tags_wav"),
+                                ("FLAC", "write_tags_flac"),
+                                ("M4A", "write_tags_m4a")):
+            var = ctk.BooleanVar(value=bool(self.cfg.get(cfg_key, False)))
+            self._fmt_tag_vars[cfg_key] = var
+            ctk.CTkCheckBox(
+                fmt_row, text=label, variable=var,
+                font=ctk.CTkFont(size=10), text_color=COLORS["text"],
+                checkbox_height=16, checkbox_width=16,
+                fg_color=COLORS["warning"],
+            ).pack(side="left", padx=(0, 10))
 
         # ── System info ──────────────────────────────────────
         self._section(scroll, "System")
@@ -271,9 +294,11 @@ class SettingsPage(ctk.CTkFrame):
             repair_card,
             text="Si Rekordbox / Engine refuse d'ouvrir tes WAV / FLAC / M4A "
                  "après un scan, ils ont été corrompus par une ancienne "
-                 "version de l'analyse. Cet outil les répare directement, "
-                 "sans backup .bak (l'historique est gardé dans "
-                 "data/repair_history.json).",
+                 "version de l'analyse. Cet outil répare les deux dégâts "
+                 "connus : octets ID3 AVANT l'en-tête (v1) et chunk id3 "
+                 "APRÈS le chunk data des WAV (v2 — le tail retiré est "
+                 "gardé dans data/repair_tails, undo possible). "
+                 "Historique : data/repair_history.json.",
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_dim"],
             justify="left", wraplength=720
@@ -704,6 +729,7 @@ class SettingsPage(ctk.CTkFrame):
                                     message="lecture des sets…")
             try:
                 conn = get_connection()
+                pairs_before = cooccurrence.pair_count(conn)
 
                 def progress(i, total, slug):
                     frac = i / max(1, total)
@@ -723,10 +749,27 @@ class SettingsPage(ctk.CTkFrame):
                 self._hide_progress(self._cooc_prog_frame)
                 return
 
-            self.after(0, lambda s=summary: self._cooc_status.configure(
+            # C4 — new pairs should retrain L4 without waiting for the
+            # feedback-vote threshold. Guarded by the user's auto-retrain
+            # opt-in + an actual change in the matrix.
+            retrain_note = ""
+            try:
+                from app.config import load_config
+                from app.engine import transition_model
+                if (summary["pairs"] != pairs_before
+                        and load_config().get("ai_auto_retrain", False)
+                        and transition_model.is_ready()
+                        and transition_model.maybe_auto_retrain(force=True)):
+                    retrain_note = "  ·  auto-retrain L4 lancé"
+            except Exception as e:
+                from app.logger import log_warning
+                log_warning(f"post-rebuild auto-retrain failed: {e}")
+
+            self.after(0, lambda s=summary, rn=retrain_note:
+                       self._cooc_status.configure(
                 text=(f"{s['sets']} sets · {s['pairs']} paires · "
                       f"{s['matched_tracks']} tracks reconnues "
-                      f"({s['unmatched_tracks']} non matchées)"),
+                      f"({s['unmatched_tracks']} non matchées)" + rn),
                 text_color=COLORS["success"]))
             tasks.complete(
                 task.id, success=True,
@@ -986,11 +1029,15 @@ class SettingsPage(ctk.CTkFrame):
                     has_torch = False
 
                 if ready:
+                    delta = transition_model.feedback_delta_since_train()
+                    thresh = getattr(transition_model,
+                                     "AUTO_RETRAIN_THRESHOLD", 10)
                     txt = (f"Modèle entraîné  ·  "
                            f"{meta.get('n_pairs', '?')} exemples, "
                            f"{meta.get('epochs', '?')} epochs  ·  "
                            f"corpus actuel: {n_pairs} co-paires + "
-                           f"{fb_n} feedback")
+                           f"{fb_n} feedback  ·  "
+                           f"auto-retrain: {delta}/{thresh} nouveaux votes")
                     color = COLORS["success"]
                 elif not has_torch:
                     txt = (f"Modèle non entraîné  ·  torch absent  ·  "
@@ -1682,6 +1729,7 @@ class SettingsPage(ctk.CTkFrame):
 
         def work():
             totals = {"scanned": 0, "ok": 0, "corrupt": 0,
+                      "trailing_corrupt": 0, "review": 0,
                       "repaired": 0, "errors": 0}
             for root in roots:
                 def on_progress(name, cur, total, _root=root):
@@ -1696,13 +1744,16 @@ class SettingsPage(ctk.CTkFrame):
 
             if dry_run:
                 msg = (f"Diagnostic terminé — {totals['scanned']} fichiers, "
-                       f"{totals['corrupt']} corrompus à réparer, "
+                       f"{totals['corrupt']} corrompus à réparer "
+                       f"(dont {totals['trailing_corrupt']} structure v2), "
+                       f"{totals['review']} à examiner, "
                        f"{totals['errors']} erreurs.")
                 color = (COLORS["warning"] if totals["corrupt"]
                          else COLORS["success"])
             else:
                 msg = (f"Terminé — {totals['repaired']} fichiers réparés, "
                        f"{totals['ok']} déjà sains, "
+                       f"{totals['review']} à examiner (non touchés), "
                        f"{totals['errors']} erreurs. "
                        f"Historique : data/repair_history.json")
                 color = (COLORS["success"] if totals["repaired"] or not totals["errors"]
@@ -1938,6 +1989,8 @@ class SettingsPage(ctk.CTkFrame):
         # Tag-write opt-in — defaults to False so we never pollute
         # Rekordbox/Engine/Serato analysis without explicit consent.
         self.cfg["write_tags_to_files"] = bool(self.write_tags_var.get())
+        for cfg_key, var in self._fmt_tag_vars.items():
+            self.cfg[cfg_key] = bool(var.get())
 
         new_theme = self.theme_var.get()
         theme_changed = new_theme != self.cfg.get("theme")

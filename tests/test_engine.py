@@ -162,6 +162,37 @@ def test_breakdown_same_artist_penalty_visible():
     assert bd["same_artist"] == -8.0
 
 
+def test_l4_verdict_classification():
+    from app.engine.library import l4_verdict
+    assert l4_verdict(70.0, None) == "absent"
+    assert l4_verdict(70.0, 3.0) == "neutral"
+    assert l4_verdict(70.0, -3.0) == "neutral"
+    assert l4_verdict(70.0, 8.0) == "agree"
+    assert l4_verdict(30.0, -8.0) == "agree"
+    assert l4_verdict(70.0, -8.0) == "dispute"
+    assert l4_verdict(30.0, 8.0) == "dispute"
+
+
+def test_breakdown_exposes_l4_verdict_keys():
+    """The Mixer popup + doubt panel rely on these three keys; they
+    must exist whether or not a trained model is present."""
+    from app.engine import library
+    a = {"path": "/a", "title": "A", "camelot": "8A",
+          "bpm": 124, "energy": 6.0}
+    b = {"path": "/b", "title": "B", "camelot": "8A",
+          "bpm": 124, "energy": 6.0}
+    bd = library.transition_score_breakdown(a, b)
+    assert "heuristic_total" in bd
+    assert bd["heuristic_total"] >= 95.0
+    assert bd["l4_verdict"] in ("absent", "neutral", "agree", "dispute")
+    if bd["l4_delta"] is None:
+        assert bd["l4_verdict"] == "absent"
+    else:
+        assert -10.0 <= bd["l4_delta"] <= 10.0
+        assert bd["l4_verdict"] == library.l4_verdict(
+            bd["heuristic_total"], bd["l4_delta"])
+
+
 # ── repair ───────────────────────────────────────────────────────
 
 def test_repair_strips_id3_prefix(tmp_path):
@@ -250,6 +281,255 @@ def test_cooccurrence_pairs_adjacent_tracks_higher(tmp_path, monkeypatch):
         conn, "/m/cox.mp3", "/m/reinier.mp3")
     assert strong > weak
     assert strong >= 50.0
+
+
+# ── training pipeline ────────────────────────────────────────────
+
+def test_resolve_missing_consumes_matcher_entries(monkeypatch):
+    """Regression: match_with_library returns a LIST of entries, not the
+    old {'tracks': [...]} dict — resolve_missing must consume it, skip
+    matched + placeholder tracks, and dedup case-insensitively."""
+    from app.engine import tracklists
+    from app.engine import training_pipeline as tp
+    entries = [
+        {"position": 1, "scraped": {"artist": "A", "title": "Known"},
+         "match": ("/m/known.mp3", "A - Known"), "score": 0.95},
+        {"position": 2, "scraped": {"artist": "B", "title": "Missing"},
+         "match": None, "score": 0.0},
+        {"position": 3, "scraped": {"artist": "ID", "title": "ID"},
+         "match": None, "score": 0.0},
+        {"position": 4, "scraped": {"artist": "b", "title": "missing"},
+         "match": None, "score": 0.0},
+    ]
+    monkeypatch.setattr(tracklists, "match_with_library",
+                        lambda tl, conn: entries)
+    missing = tp.resolve_missing(None, [{"tracks": []}])
+    assert missing == [{"artist": "B", "title": "Missing"}]
+
+
+# ── tracklists : parser + matcher (B1) ───────────────────────────
+
+_TL_FIXTURE = """<html><body>
+<h1>Daft Punk @ Test Festival, France 2026-01-01</h1>
+<a href="/dj/daftpunk/index.html">Daft Punk</a>
+<div class="bCont tl">
+  <div itemprop="tracks" itemscope itemtype="http://schema.org/MusicRecording">
+    <meta itemprop="name" content="Daft Punk - Around The World">
+    <meta itemprop="byArtist" content="Daft Punk">
+    <meta itemprop="duration" content="PT7M10S">
+    <meta itemprop="genre" content="House">
+  </div>
+  <div class="cue noWrap action mt5">00:11</div>
+</div>
+<div class="bCont tl">
+  <div itemprop="tracks" itemscope itemtype="http://schema.org/MusicRecording">
+    <meta itemprop="name" content="Modjo - Lady (Hear Me Tonight)">
+    <meta itemprop="byArtist" content="Modjo">
+  </div>
+</div>
+<div class="bCont tl">
+  <div itemprop="tracks" itemscope itemtype="http://schema.org/MusicRecording">
+    <span class="trackValue">ID - ID</span>
+  </div>
+</div>
+</body></html>"""
+
+
+def test_parse_html_extracts_schema_org_tracks():
+    from app.engine.tracklists import _parse_html
+    tl = _parse_html(_TL_FIXTURE, url="https://x/tracklist/t/test.html")
+    assert tl["dj"] == "Daft Punk"
+    assert tl["title"].startswith("Daft Punk @ Test Festival")
+    tracks = tl["tracks"]
+    assert len(tracks) == 3
+    assert tracks[0]["artist"] == "Daft Punk"
+    assert tracks[0]["title"] == "Around The World"
+    assert tracks[0]["time"] == "00:11"
+    assert tracks[1]["artist"] == "Modjo"
+    assert tracks[1]["title"].startswith("Lady")
+    assert tracks[2]["raw"] == "ID - ID"
+
+
+def test_parse_iso_duration():
+    from app.engine.tracklists import _parse_iso_duration
+    assert _parse_iso_duration("PT7M10S") == 430
+    assert _parse_iso_duration("PT1H2M3S") == 3723
+    assert _parse_iso_duration("PT45S") == 45
+    assert _parse_iso_duration("") == 0
+    assert _parse_iso_duration("garbage") == 0
+
+
+def test_name_match_score_precision_first():
+    from app.engine.tracklists import name_match_score
+    hi = name_match_score("Daft Punk", "Around The World",
+                          "Daft Punk - Around The World")
+    assert hi >= 0.9
+    reorder = name_match_score("Daft Punk", "Around The World",
+                               "Around The World - Daft Punk")
+    assert reorder >= 0.8
+    lo = name_match_score("Carl Cox", "Phuture",
+                          "Daft Punk - Around The World")
+    assert lo < 0.5
+    padded = name_match_score(
+        "Gorillaz", "Feel Good Inc",
+        "Gorillaz - Feel Good Inc (Instrumental Extended Club Mix)")
+    assert padded >= 0.8
+    other_track = name_match_score("Gorillaz", "Feel Good Inc",
+                                   "Gorillaz - On Melancholy Hill")
+    assert other_track < 0.8
+
+
+def test_is_id_placeholder():
+    from app.engine.tracklists import _is_id_placeholder
+    assert _is_id_placeholder("ID", "ID") is True
+    assert _is_id_placeholder("", "") is True
+    assert _is_id_placeholder("id", "Some Title") is True
+    assert _is_id_placeholder("x", "y") is True
+    assert _is_id_placeholder("Daft Punk", "Around The World") is False
+
+
+# ── L4 : inférence sans modèle (B1) ──────────────────────────────
+
+def test_l4_score_none_without_model(monkeypatch, tmp_path):
+    from app.engine import transition_model as tm
+    monkeypatch.setattr(tm, "_MODEL_PATH", tmp_path / "absent.pt")
+    monkeypatch.setattr(tm, "_model_cache", None)
+    a = {"path": "/a", "title": "A", "bpm": 124, "camelot": "8A",
+         "energy": 5.0}
+    b = {"path": "/b", "title": "B", "bpm": 126, "camelot": "9A",
+         "energy": 6.0}
+    assert tm.score(a, b) is None
+    assert tm.is_ready() is False
+
+
+# ── playlist sync ────────────────────────────────────────────────
+
+def test_compute_diff_preserves_spotify_order(tmp_path):
+    """Regression: `added` used to be built from a set difference, so
+    the download queue lost the source-playlist order."""
+    from app.engine import playlist_sync
+    kept_file = tmp_path / "b.mp3"
+    kept_file.write_bytes(b"x")
+    source = [
+        {"spotify_id": "a", "artist": "A", "title": "1"},
+        {"spotify_id": "b", "artist": "B", "title": "2"},
+        {"spotify_id": "c", "artist": "C", "title": "3"},
+        {"spotify_id": "d", "artist": "D", "title": "4"},
+    ]
+    cache = {"tracks": [
+        {"spotify_id": "b", "artist": "B", "title": "2",
+         "filepath": str(kept_file)},
+        {"spotify_id": "d", "artist": "D", "title": "4",
+         "filepath": str(tmp_path / "gone.mp3")},
+        {"spotify_id": "z", "artist": "Z", "title": "9",
+         "filepath": str(kept_file)},
+    ]}
+    diff = playlist_sync.compute_diff(source, cache)
+    assert [t["spotify_id"] for t in diff["added"]] == ["a", "c", "d"]
+    assert [t["spotify_id"] for t in diff["kept"]] == ["b"]
+    assert [t["spotify_id"] for t in diff["missing"]] == ["d"]
+    assert [t["spotify_id"] for t in diff["removed"]] == ["z"]
+
+
+def test_bootstrap_cache_matches_existing_folder(tmp_path):
+    """A folder downloaded before the sync system existed must be
+    recognised: matched files become `kept`, only new songs download."""
+    from app.engine import playlist_sync
+    (tmp_path / "01 - Daft Punk - Around The World.mp3").write_bytes(b"x")
+    (tmp_path / "cover.jpg").write_bytes(b"x")
+    source = [
+        {"spotify_id": "a", "artist": "Daft Punk",
+         "title": "Around The World"},
+        {"spotify_id": "b", "artist": "Modjo", "title": "Lady"},
+    ]
+    cache = playlist_sync.bootstrap_cache_from_folder(source, tmp_path)
+    assert cache is not None and cache.get("bootstrapped") is True
+    assert [t["spotify_id"] for t in cache["tracks"]] == ["a"]
+
+    diff = playlist_sync.compute_diff(source, cache)
+    assert [t["spotify_id"] for t in diff["added"]] == ["b"]
+    assert [t["spotify_id"] for t in diff["kept"]] == ["a"]
+
+
+def test_bootstrap_cache_none_when_nothing_matches(tmp_path):
+    from app.engine import playlist_sync
+    source = [{"spotify_id": "a", "artist": "X", "title": "Y"}]
+    assert playlist_sync.bootstrap_cache_from_folder(source, tmp_path) \
+        is None
+    assert playlist_sync.bootstrap_cache_from_folder(
+        source, tmp_path / "absent") is None
+
+
+def test_write_m3u_orders_entries(tmp_path):
+    from app.engine import playlist_sync
+    f1 = tmp_path / "First Track.mp3"
+    f1.write_bytes(b"x")
+    f2 = tmp_path / "Second Track.mp3"
+    f2.write_bytes(b"x")
+    tracks = [
+        {"spotify_id": "1", "artist": "AA", "title": "First",
+         "filepath": str(f1)},
+        {"spotify_id": "2", "artist": "BB", "title": "Second",
+         "filepath": str(f2)},
+        {"spotify_id": "3", "artist": "CC", "title": "Gone",
+         "filepath": str(tmp_path / "missing.mp3")},
+    ]
+    p = playlist_sync.write_m3u(tmp_path, 'My "Mix": 2026?', tracks)
+    assert p is not None and p.exists() and p.suffix == ".m3u8"
+    lines = p.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "#EXTM3U"
+    refs = [ln for ln in lines[1:] if ln and not ln.startswith("#")]
+    assert refs == ["First Track.mp3", "Second Track.mp3"]
+
+
+# ── setlist.fm fallback (C2) ─────────────────────────────────────
+
+_SLFM_SETLIST = {
+    "artist": {"name": "Daft Punk"},
+    "venue": {"name": "Test Arena"},
+    "eventDate": "01-01-2026",
+    "url": "https://www.setlist.fm/setlist/daft-punk/2026/test.html",
+    "sets": {"set": [
+        {"song": [
+            {"name": "Around The World"},
+            {"name": "Feel Good Inc", "cover": {"name": "Gorillaz"}},
+            {"name": ""},
+        ]},
+        {"song": [{"name": "One More Time"}]},
+    ]},
+}
+
+
+def test_setlistfm_to_tracklist_maps_cooccurrence_shape():
+    from app.engine import setlist_fm
+    tl = setlist_fm.to_tracklist(_SLFM_SETLIST)
+    assert tl is not None
+    assert tl["dj"] == "Daft Punk"
+    assert tl["source"] == "setlist.fm"
+    assert [t["position"] for t in tl["tracks"]] == [1, 2, 3]
+    assert tl["tracks"][0]["raw"] == "Daft Punk - Around The World"
+    assert tl["tracks"][1]["artist"] == "Gorillaz"
+    assert tl["tracks"][2]["title"] == "One More Time"
+
+
+def test_setlistfm_rejects_sets_without_pairs():
+    from app.engine import setlist_fm
+    solo = {"artist": {"name": "X"},
+            "sets": {"set": [{"song": [{"name": "Only One"}]}]}}
+    assert setlist_fm.to_tracklist(solo) is None
+
+
+def test_setlistfm_fetch_and_cache_writes_files(tmp_path, monkeypatch):
+    from app.engine import setlist_fm
+    monkeypatch.setattr(setlist_fm, "_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(setlist_fm, "is_configured", lambda: True)
+    monkeypatch.setattr(setlist_fm, "_http_get_json",
+                        lambda url: {"setlist": [_SLFM_SETLIST]})
+    paths = setlist_fm.fetch_and_cache("Daft Punk", limit=5)
+    assert len(paths) == 1
+    data = json.loads(paths[0].read_text(encoding="utf-8"))
+    assert data["dj"] == "Daft Punk"
+    assert len(data["tracks"]) == 3
 
 
 # ── task registry ────────────────────────────────────────────────

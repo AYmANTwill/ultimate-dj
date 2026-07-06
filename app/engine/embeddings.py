@@ -362,5 +362,8 @@ def from_blob(blob: bytes | None) -> np.ndarray | None:
         return None
     try:
         return np.frombuffer(blob, dtype=DTYPE)
-    except Exception:
+    except Exception as e:
+        from app.logger import log_warning
+        log_warning(f"embeddings.from_blob: corrupt BLOB "
+                    f"({len(blob)} bytes): {e}")
         return None

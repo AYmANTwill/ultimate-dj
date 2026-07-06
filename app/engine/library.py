@@ -291,6 +291,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("intro_end",      "REAL"),
         ("outro_start",    "REAL"),
         ("drops",          "TEXT"),
+        ("source",         "TEXT DEFAULT 'user'"),
+        ("audio_purged",   "INTEGER DEFAULT 0"),
     ]:
         if col not in existing_cols:
             try:
@@ -373,7 +375,10 @@ def get_drops(track: dict) -> list[float]:
     try:
         import json
         return [float(t) for t in json.loads(raw)]
-    except Exception:
+    except Exception as e:
+        from app.logger import log_warning
+        log_warning(f"get_drops: corrupt JSON for "
+                    f"{track.get('path', '?')}: {e}")
         return []
 
 
@@ -411,7 +416,10 @@ def get_beat_grid(track: dict) -> list[float]:
     try:
         import json
         return [float(t) for t in json.loads(raw)]
-    except Exception:
+    except Exception as e:
+        from app.logger import log_warning
+        log_warning(f"get_beat_grid: corrupt JSON for "
+                    f"{track.get('path', '?')}: {e}")
         return []
 
 
@@ -463,7 +471,10 @@ def get_cue_points(track: dict) -> list[dict]:
     import json
     try:
         return list(json.loads(raw))
-    except Exception:
+    except Exception as e:
+        from app.logger import log_warning
+        log_warning(f"get_cue_points: corrupt JSON for "
+                    f"{track.get('path', '?')}: {e}")
         return []
 
 
@@ -637,7 +648,10 @@ def list_setlists(conn: sqlite3.Connection) -> list[dict]:
     for r in rows:
         try:
             count = len(json.loads(r["slots_json"]))
-        except Exception:
+        except Exception as e:
+            from app.logger import log_warning
+            log_warning(f"list_setlists: corrupt slots_json for "
+                        f"'{r['name']}': {e}")
             count = 0
         out.append({
             "id": r["id"],
@@ -661,7 +675,9 @@ def load_setlist(conn: sqlite3.Connection,
         return []
     try:
         raw_slots = json.loads(row["slots_json"])
-    except Exception:
+    except Exception as e:
+        from app.logger import log_warning
+        log_warning(f"load_setlist: corrupt slots_json for '{name}': {e}")
         return []
     # Re-fetch each track from the tracks table (slots only store paths)
     out: list[tuple[dict, float, bool]] = []
@@ -1193,6 +1209,26 @@ def transition_score(track_a: dict, track_b: dict) -> float:
     return round(max(0.0, min(100.0, score)), 1)
 
 
+_L4_DISPUTE_THRESHOLD = 6.0
+
+
+def l4_verdict(heuristic_total: float, l4_delta: float | None) -> str:
+    """Classify the L4 model's stance versus the heuristic scorer.
+
+    'absent'  — no trained model (delta is None)
+    'neutral' — |delta| under the dispute threshold
+    'agree'   — delta pushes the same way the heuristic already points
+    'dispute' — delta pushes against the heuristic's verdict
+    """
+    if l4_delta is None:
+        return "absent"
+    if abs(l4_delta) < _L4_DISPUTE_THRESHOLD:
+        return "neutral"
+    if (heuristic_total >= 50.0) == (l4_delta > 0):
+        return "agree"
+    return "dispute"
+
+
 def transition_score_breakdown(track_a: dict, track_b: dict) -> dict:
     """Same calculation as transition_score, but returns the per-axis
     breakdown so the UI can explain WHY a transition scored what it
@@ -1285,7 +1321,16 @@ def transition_score_breakdown(track_a: dict, track_b: dict) -> dict:
         model_bonus = 0.0
         model_label = "(modèle non entraîné)"
 
+    base = (key * weights["key"] + bpm * weights["bpm"]
+            + energy * weights["energy"] + audio_sim * weights["audio"])
+    heuristic_total = round(base + genre_bonus + rating_mod
+                            + same_artist + coop_bonus, 1)
+    l4_delta = model_bonus if m_raw is not None else None
+
     return {
+        "heuristic_total": heuristic_total,
+        "l4_delta":     l4_delta,
+        "l4_verdict":   l4_verdict(heuristic_total, l4_delta),
         "feedback":  fb,
         "key": {
             "score": round(key, 1), "weight": weights["key"],
