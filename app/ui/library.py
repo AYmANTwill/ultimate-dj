@@ -185,6 +185,7 @@ class LibraryPage(ctk.CTkFrame):
             ("energy",  "E",         50),
             ("rating",  "Rating",    80),
             ("genre",   "Genre",    140),
+            ("kbps",    "kbps",      60),
             ("dur",     "Dur",       60),
         ]
         self.table = FastList(
@@ -332,6 +333,9 @@ class LibraryPage(ctk.CTkFrame):
             title = (t["title"] or "?")[:60]
             if corrupt:
                 title = f"⚠  {title}"
+            kbps = t.get("bitrate") or 0
+            kbps_txt = ("♾ " + str(kbps) if kbps >= 900
+                        else str(kbps) if kbps else "?")
             rows.append((
                 title,
                 f"{(t['bpm'] or 0):.0f}{'🔒' if t.get('bpm_locked') else ''}",
@@ -340,9 +344,15 @@ class LibraryPage(ctk.CTkFrame):
                 f"{(t['energy'] or 0):.1f}",
                 stars,
                 (t.get("genre") or "")[:24],
+                kbps_txt,
                 _format_duration(t.get("duration")),
             ))
-            tags.append(("err",) if corrupt else ())
+            if corrupt:
+                tags.append(("err",))
+            elif 0 < kbps <= 192:
+                tags.append(("warn",))
+            else:
+                tags.append(())
         self.table.set_rows(rows, row_tags=tags)
         n_corrupt = sum(1 for t in tracks if t.get("corrupt"))
         suffix = []

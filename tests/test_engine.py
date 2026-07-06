@@ -482,6 +482,24 @@ def test_write_m3u_orders_entries(tmp_path):
     assert refs == ["First Track.mp3", "Second Track.mp3"]
 
 
+def test_upsert_bitrate_roundtrip_and_coalesce():
+    from app.engine import library
+    conn = _in_mem_db()
+    library.upsert_track(conn, {
+        "path": "/m/a.mp3", "title": "A", "bpm": 128, "key": "C major",
+        "camelot": "8B", "energy": 5, "duration": 200, "bitrate": 320})
+    row = conn.execute(
+        "SELECT bitrate FROM tracks WHERE path='/m/a.mp3'").fetchone()
+    assert row["bitrate"] == 320
+    # Re-analyse without bitrate must NOT wipe the stored value
+    library.upsert_track(conn, {
+        "path": "/m/a.mp3", "title": "A", "bpm": 128, "key": "C major",
+        "camelot": "8B", "energy": 5, "duration": 200})
+    row = conn.execute(
+        "SELECT bitrate FROM tracks WHERE path='/m/a.mp3'").fetchone()
+    assert row["bitrate"] == 320
+
+
 def test_similarity_score_calibrated_and_legacy():
     """L1 was saturated (lite cosines ~0.97 between random tracks):
     calibrated mapping must spread p5..p95 onto 0..100; the legacy

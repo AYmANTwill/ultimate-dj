@@ -119,6 +119,19 @@ def get_duration(path: str) -> float:
         return 0.0
 
 
+def get_bitrate(path: str) -> int:
+    """Container bitrate in kbps via mutagen, 0 when unknown. WAV/FLAC
+    report their true lossless rate (~900-1500); lossy containers report
+    the encoded rate — note that a transcode keeps the container rate,
+    so this is a floor-quality hint, not proof of source quality."""
+    try:
+        audio = mutagen.File(path)
+        br = getattr(getattr(audio, "info", None), "bitrate", 0) or 0
+        return int(br // 1000) if br > 10000 else int(br)
+    except Exception:
+        return 0
+
+
 def analyze_track(path: str) -> dict:
     """
     Full analysis of an audio file.
@@ -159,6 +172,7 @@ def analyze_track(path: str) -> dict:
         "energy": energy,
         "duration": duration,
         "key_confidence": key_confidence,
+        "bitrate": get_bitrate(path),
         "beat_grid": beat_grid,
         "intro_end":   struct.get("intro_end"),
         "outro_start": struct.get("outro_start"),

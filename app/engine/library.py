@@ -166,6 +166,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             # / score on this row, but Library/Mixer would refuse to load
             # the file. Always 0 for source='user' tracks.
             ("audio_purged",   "INTEGER DEFAULT 0"),
+            # Container bitrate in kbps (mutagen), NULL = never probed.
+            # Provenance hint for the DJ: a YouTube rip stays 128-160
+            # real quality even when transcoded to a 320 container, but
+            # lossless WAV/FLAC (>=900) vs lossy (<=320) is reliable.
+            ("bitrate",        "INTEGER"),
         ]:
             if col not in existing_cols:
                 try:
@@ -293,6 +298,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ("drops",          "TEXT"),
         ("source",         "TEXT DEFAULT 'user'"),
         ("audio_purged",   "INTEGER DEFAULT 0"),
+        ("bitrate",        "INTEGER"),
     ]:
         if col not in existing_cols:
             try:
@@ -327,15 +333,16 @@ def upsert_track(conn: sqlite3.Connection, info: dict):
     # is unchanged. engine.training_pipeline passes 'training' / 'fma'
     # when filling the corpus.
     payload.setdefault("source", "user")
+    payload.setdefault("bitrate", None)
     conn.execute("""
         INSERT INTO tracks
             (path, title, bpm, key, camelot, energy, duration,
              key_confidence, added_at, beat_grid,
-             intro_end, outro_start, drops, source)
+             intro_end, outro_start, drops, source, bitrate)
         VALUES
             (:path, :title, :bpm, :key, :camelot, :energy, :duration,
              :key_confidence, :added_at, :beat_grid,
-             :intro_end, :outro_start, :drops, :source)
+             :intro_end, :outro_start, :drops, :source, :bitrate)
         ON CONFLICT(path) DO UPDATE SET
             title          = :title,
             bpm            = CASE WHEN tracks.bpm_locked = 1
@@ -349,7 +356,8 @@ def upsert_track(conn: sqlite3.Connection, info: dict):
             intro_end      = COALESCE(:intro_end, tracks.intro_end),
             outro_start    = COALESCE(:outro_start, tracks.outro_start),
             drops          = COALESCE(:drops, tracks.drops),
-            source         = COALESCE(:source, tracks.source)
+            source         = COALESCE(:source, tracks.source),
+            bitrate        = COALESCE(:bitrate, tracks.bitrate)
     """, payload)
     conn.commit()
 
