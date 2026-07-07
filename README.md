@@ -314,6 +314,26 @@ shows the contribution from each.
   layers, deep relations, progress board + journal) with an offline 3D
   interactive twin (`docs/PROJECT_MAP.html`) including a quest tree
   with XP, dependencies and blockers.
+- **L1 audio axis recalibrated** — measured mean pairwise cosine of
+  0.971 between RANDOM tracks on the lite backend: the absolute
+  (cos+1)×50 mapping returned 95-100 for every pair, a dead axis.
+  `similarity_score` now maps the library's own p5..p95 range onto
+  0..100 (auto-recalibrated when embeddings change): spread went from
+  std 1.9 to 26.4 on real pairs.
+- **L4 evaluated honestly** — held-out ranking AUC **0.899** vs 0.601
+  for raw features without the model: the Siamese genuinely learned.
+- **kbps column + spectral truth detector** — container bitrate stored
+  and shown per track, plus a numpy-STFT spectral-ceiling probe that
+  catches transcodes hiding in 320/lossless containers (a "WAV 1411k"
+  ceiling at 16 kHz is a ~128k rip). Real-library scan: 530/1104
+  suspected transcodes, only 2 genuinely full-band files.
+- **Corpus dedup made name-aware** — an audio-cosine hit alone paired
+  Janet Jackson with Skrillex at 0.9999 and deleted a whole downloaded
+  batch as "duplicates"; a dup verdict now also requires a name match.
+- **Environment hardening** — numba>=0.66 pinned (older numba rejects
+  NumPy 2.2 and killed librosa.load entirely), polyphase resampling on
+  all fixed-rate loads, repair scans now persist the ⚠ corrupt flags,
+  and a setlist.fm API-key field in Settings activates the fallback.
 
 ### Next up
 - Run the v2 repair on the 363 flagged WAVs (10-file Rekordbox-verified

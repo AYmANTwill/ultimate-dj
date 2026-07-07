@@ -123,6 +123,21 @@ class SettingsPage(ctk.CTkFrame):
         self.sp_secret = self._text_row(scroll, "Client Secret", _sec_now,
                                          show="*")
 
+        # ── setlist.fm (fallback corpus, plan B du scraping) ──
+        self._section(scroll, "setlist.fm API")
+        ctk.CTkLabel(
+            scroll,
+            text=("Plan B quand 1001tracklists rate-limite : REST "
+                  "officiel, sans scraping. Clé gratuite sur "
+                  "setlist.fm/settings/api — colle-la ici et le "
+                  "fallback engine.setlist_fm devient actif."),
+            font=ctk.CTkFont(size=10), text_color=COLORS["text_dim"],
+            justify="left", wraplength=720,
+        ).pack(anchor="w", padx=4, pady=(0, 4))
+        self.slfm_key = self._text_row(
+            scroll, "API key", self.cfg.get("setlistfm_api_key", ""),
+            show="*")
+
         # ── 1001tracklists account (for the scraping pipeline) ─
         # Guest users get rate-limited HARD on their IP after a few
         # requests. A logged-in account lifts that quota dramatically
@@ -2011,6 +2026,7 @@ class SettingsPage(ctk.CTkFrame):
         self.cfg["write_tags_to_files"] = bool(self.write_tags_var.get())
         for cfg_key, var in self._fmt_tag_vars.items():
             self.cfg[cfg_key] = bool(var.get())
+        self.cfg["setlistfm_api_key"] = self.slfm_key.get().strip()
 
         new_theme = self.theme_var.get()
         theme_changed = new_theme != self.cfg.get("theme")
