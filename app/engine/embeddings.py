@@ -269,7 +269,8 @@ def _embed_clap(path: str) -> np.ndarray:
     import librosa
     model, proc = _ensure_clap()
     # CLAP wants 48kHz mono
-    y, sr = librosa.load(path, sr=48000, mono=True, duration=10)
+    y, sr = librosa.load(path, sr=48000, mono=True, duration=10,
+                          res_type="polyphase")
     inputs = proc(audios=y, sampling_rate=48000, return_tensors="pt")
     with torch.no_grad():
         emb = model.get_audio_features(**inputs).cpu().numpy()[0]
@@ -293,7 +294,8 @@ def _embed_panns(path: str) -> np.ndarray:
     if _panns_inferer is None:
         from panns_inference import AudioTagging
         _panns_inferer = AudioTagging(checkpoint_path=None, device="cpu")
-    y, sr = librosa.load(path, sr=32000, mono=True, duration=30)
+    y, sr = librosa.load(path, sr=32000, mono=True, duration=30,
+                          res_type="polyphase")
     audio = y[None, :]  # (1, n)
     _, emb = _panns_inferer.inference(audio)
     emb = emb[0]

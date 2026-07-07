@@ -532,7 +532,9 @@ def waveform(path: str, buckets: int = WAVEFORM_BUCKETS) -> np.ndarray:
     try:
         import librosa
         # 8 kHz mono is enough for waveform peaks; saves a *lot* of time
-        y, _sr = librosa.load(path, sr=8000, mono=True)
+        # (polyphase: the resampy fallback needs numba, broken w/ NumPy 2.2)
+        y, _sr = librosa.load(path, sr=8000, mono=True,
+                               res_type="polyphase")
         if len(y) == 0:
             return np.zeros(buckets, dtype=np.float32)
         chunk = max(1, len(y) // buckets)

@@ -7,6 +7,8 @@ Pillow>=10.0.0
 
 # Audio analysis + playback
 librosa>=0.10.0
+numba>=0.66                 # librosa's jit dep — older numba rejects
+                            # NumPy 2.2 and kills librosa.load entirely
 numpy>=1.24.0
 soundfile>=0.12.0
 sounddevice>=0.4.6

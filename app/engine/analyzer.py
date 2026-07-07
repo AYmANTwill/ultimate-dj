@@ -205,7 +205,10 @@ def analyze_track(path: str) -> dict:
     cfg = load_config()
     dur = cfg.get("analysis_duration", 90)
 
-    y, sr = librosa.load(path, sr=22050, mono=True, duration=dur)
+    # polyphase (scipy) — the default resampler chain falls back to
+    # resampy, whose numba dependency is broken with NumPy 2.2.
+    y, sr = librosa.load(path, sr=22050, mono=True, duration=dur,
+                          res_type="polyphase")
     bpm, beat_grid = detect_beat_grid(y, sr)
     key, key_confidence = detect_key(y, sr)
     energy = detect_energy(y)
