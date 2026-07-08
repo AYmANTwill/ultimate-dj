@@ -984,8 +984,14 @@ def sync_library(conn: sqlite3.Connection,
         folders = get_music_roots()
 
     on_disk = {str(p.resolve()): p for p in scan_audio_files(folders)}
-    db_paths = {row["path"] for row in
-                conn.execute("SELECT path FROM tracks").fetchall()}
+    # Corpus rows (source training/fma) live outside the music roots and
+    # their audio is purged by design (audio_purged=1) — they must NEVER
+    # be orphan candidates, or every library Sync wipes the training
+    # corpus (it did exactly that on 2026-07-07: 604 rows lost).
+    db_paths = {row["path"] for row in conn.execute(
+        "SELECT path FROM tracks "
+        "WHERE COALESCE(source, 'user') = 'user' "
+        "AND COALESCE(audio_purged, 0) = 0").fetchall()}
 
     # Orphans: in DB but missing on disk
     orphans = [p for p in db_paths if p not in on_disk]

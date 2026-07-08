@@ -545,6 +545,32 @@ def test_calibrate_similarity_falls_back_on_tiny_library(monkeypatch):
     assert em._SIM_CAL is None
 
 
+def test_sync_never_orphans_corpus_rows(tmp_path):
+    """Regression: sync_library's orphan sweep deleted every training
+    row (their audio is purged BY DESIGN in embeddings-only mode) — the
+    whole 604-track corpus vanished on 2026-07-07. Corpus rows must
+    survive a sync; user rows with a missing file must still go."""
+    from app.engine import library
+    conn = _in_mem_db()
+    library.upsert_track(conn, {
+        "path": str(tmp_path / "gone_user.mp3"), "title": "U",
+        "bpm": 128, "key": "C major", "camelot": "8B",
+        "energy": 5, "duration": 200})
+    library.upsert_track(conn, {
+        "path": str(tmp_path / "corpus.mp3"), "title": "T",
+        "bpm": 130, "key": "A minor", "camelot": "8A",
+        "energy": 6, "duration": 180, "source": "training"})
+    conn.execute("UPDATE tracks SET audio_purged = 1 "
+                 "WHERE source = 'training'")
+    conn.commit()
+
+    result = library.sync_library(conn, folders=[str(tmp_path)])
+    assert result["orphans_removed"] == 1
+    remaining = [r["path"] for r in
+                 conn.execute("SELECT path FROM tracks").fetchall()]
+    assert remaining == [str(tmp_path / "corpus.mp3")]
+
+
 def test_confirms_duplicate_requires_name_agreement():
     """Regression: a 0.9999 lite-embedding cosine paired Janet Jackson
     with Skrillex and deleted 1106 corpus files as 'dups' (2026-07-06).
