@@ -634,9 +634,9 @@ const QUESTS = [
  {id:'B2', l:'B2 · Audit 122 except:pass', lane:'B', x:270, y:372, st:'active', xp:30, prog:.7, deps:['map'],
   d:"Passe data-path faite : 11 log_warning ajoutés (JSON corrompus library/export, scrape→cache discovery, BLOB embeddings, durée 0 analyzer) sans toucher au contrôle de flux. Restent les sites best-effort/UI, majoritairement légitimes.",
   f:'app/engine/', ok:'Data-paths tracés · 2026-07-05'},
- {id:'B3', l:'B3 · Split settings.py', lane:'B', x:430, y:372, st:'available', xp:25, deps:['map'],
-  d:"1959 LOC → package settings/ (_credentials, _paths, _ai, _repair…).",
-  f:'app/ui/settings.py', ok:'Aucun fichier > 800 LOC dans ui/'},
+ {id:'B3', l:'B3 · Split settings.py', lane:'B', x:430, y:372, st:'done', xp:25, deps:['map'],
+  d:"2 129 lignes → package 6 fichiers (page 289, general 373, ai_sections 612, ai_workers 598, maintenance 362 — tous < 800), split mécanique par plages verbatim, construction headless vérifiée, 51/51 tests.",
+  f:'app/ui/settings/', ok:'Livré 2026-07-07 — aucun fichier ui/ > 800 LOC'},
  // — Sprint C
  {id:'C3', l:'C3 · Delta L4 au Mixer', lane:'C', x:270, y:472, st:'done', xp:30, deps:['map'],
   d:"l4_verdict engine + bannière popup + colonne L4 + encart « le modèle doute ».",
