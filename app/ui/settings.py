@@ -691,6 +691,44 @@ class SettingsPage(ctk.CTkFrame):
          self._fma_prog_bar,
          self._fma_prog_step) = self._make_progress_row(pipe_card)
 
+        # ── Journal (messages & erreurs) ─────────────────────
+        # Le backend existe depuis toujours (logger.py → data/errors.log,
+        # rotation 5×2 Mo) ; cette section le rend visible dans l'app.
+        self._section(scroll, "Journal (messages & erreurs)")
+        log_card = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"],
+                                 corner_radius=8)
+        log_card.pack(fill="x", pady=3)
+        from pathlib import Path as _P
+        from app.logger import get_log_path
+        _lp = _P(get_log_path())
+        _lsz = _lp.stat().st_size / 1024 if _lp.exists() else 0
+        ctk.CTkLabel(
+            log_card,
+            text=f"{_lp}  ·  {_lsz:.0f} Ko  ·  rotation 5 × 2 Mo",
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"],
+        ).pack(anchor="w", padx=12, pady=(10, 4))
+        log_row = ctk.CTkFrame(log_card, fg_color="transparent")
+        log_row.pack(fill="x", padx=12, pady=(0, 10))
+        ctk.CTkButton(
+            log_row, text="Voir le journal", width=160, height=32,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            text_color=COLORS["bg_dark"],
+            command=lambda: self._show_log_journal(None),
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            log_row, text="Erreurs seulement", width=150, height=32,
+            fg_color=COLORS["bg_input"], hover_color=COLORS["error"],
+            text_color=COLORS["text"],
+            command=lambda: self._show_log_journal("ERROR"),
+        ).pack(side="left", padx=6)
+        ctk.CTkButton(
+            log_row, text="Ouvrir le dossier", width=140, height=32,
+            fg_color=COLORS["bg_input"], hover_color=COLORS["accent"],
+            text_color=COLORS["text"],
+            command=lambda: __import__("os").startfile(str(_lp.parent)),
+        ).pack(side="left", padx=6)
+
         # ── About ────────────────────────────────────────────
         self._section(scroll, "About")
         about = ctk.CTkFrame(scroll, fg_color=COLORS["bg_card"], corner_radius=8)
@@ -1797,6 +1835,54 @@ class SettingsPage(ctk.CTkFrame):
                 text=msg, text_color=color))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _show_log_journal(self, level: str | None = None):
+        """Popup viewer over data/errors.log — colored by level,
+        newest at the bottom, refresh in place."""
+        import tkinter as tk
+        from app.logger import tail_log
+
+        win = ctk.CTkToplevel(self)
+        win.title("Journal — messages & erreurs"
+                  + (f" ({level})" if level else ""))
+        win.geometry("940x560")
+        win.configure(fg_color=COLORS["bg_dark"])
+        win.transient(self.winfo_toplevel())
+
+        txt = tk.Text(
+            win, bg=COLORS["bg_card"], fg=COLORS["text"],
+            insertbackground=COLORS["text"], relief="flat",
+            font=("Consolas", 9), wrap="none")
+        txt.pack(fill="both", expand=True, padx=14, pady=(14, 6))
+        txt.tag_configure("ERROR", foreground="#ff5c7a")
+        txt.tag_configure("WARNING", foreground="#ffb020")
+        txt.tag_configure("INFO", foreground=COLORS["text_dim"])
+
+        def _fill():
+            txt.configure(state="normal")
+            txt.delete("1.0", "end")
+            for line in tail_log(400, level=level):
+                tag = ("ERROR" if "[ERROR" in line
+                       else "WARNING" if "[WARNING" in line
+                       else "INFO")
+                txt.insert("end", line + "\n", tag)
+            txt.see("end")
+            txt.configure(state="disabled")
+
+        _fill()
+
+        bar = ctk.CTkFrame(win, fg_color="transparent")
+        bar.pack(fill="x", padx=14, pady=(0, 12))
+        ctk.CTkButton(
+            bar, text="Rafraîchir", width=110, height=30,
+            fg_color=COLORS["bg_input"], hover_color=COLORS["accent"],
+            text_color=COLORS["text"], command=_fill,
+        ).pack(side="left")
+        ctk.CTkButton(
+            bar, text="Fermer", width=100, height=30,
+            fg_color=COLORS["bg_card"], hover_color=COLORS["bg_input"],
+            text_color=COLORS["text"], command=win.destroy,
+        ).pack(side="right")
 
     def _show_repair_history(self):
         """Open a popup listing the most recent repairs."""

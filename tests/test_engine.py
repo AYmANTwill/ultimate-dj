@@ -545,6 +545,23 @@ def test_calibrate_similarity_falls_back_on_tiny_library(monkeypatch):
     assert em._SIM_CAL is None
 
 
+def test_tail_log_filters_and_orders(tmp_path):
+    from app.logger import tail_log
+    p = tmp_path / "errors.log"
+    (tmp_path / "errors.log.1").write_text(
+        "2026-07-07 10:00:00  [INFO   ]  ancien\n", encoding="utf-8")
+    p.write_text(
+        "2026-07-07 11:00:00  [WARNING]  attention\n"
+        "2026-07-07 12:00:00  [ERROR  ]  boom\n", encoding="utf-8")
+    all_lines = tail_log(10, path=p)
+    assert len(all_lines) == 3
+    assert all_lines[0].endswith("ancien")
+    assert all_lines[-1].endswith("boom")
+    errs = tail_log(10, level="error", path=p)
+    assert len(errs) == 1 and errs[0].endswith("boom")
+    assert tail_log(10, path=tmp_path / "absent.log") == []
+
+
 def test_sync_never_orphans_corpus_rows(tmp_path):
     """Regression: sync_library's orphan sweep deleted every training
     row (their audio is purged BY DESIGN in embeddings-only mode) — the

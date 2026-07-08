@@ -56,3 +56,23 @@ def log_error(context: str, exc: Exception | None = None):
 
 def get_log_path() -> str:
     return str(LOG_FILE)
+
+
+def tail_log(lines: int = 300, *, level: str | None = None,
+             path: str | Path | None = None) -> list[str]:
+    """Last ``lines`` log entries (oldest → newest), optionally filtered
+    by level ('ERROR' / 'WARNING' / 'INFO'). Includes the previous
+    rollover file so a freshly-rotated log still shows history. Powers
+    the Settings → Journal viewer."""
+    p = Path(path) if path else LOG_FILE
+    out: list[str] = []
+    for f in (Path(str(p) + ".1"), p):
+        try:
+            out.extend(f.read_text("utf-8",
+                                    errors="replace").splitlines())
+        except OSError:
+            continue
+    if level:
+        needle = f"[{level.upper():<7}]"
+        out = [ln for ln in out if needle in ln]
+    return out[-lines:]
