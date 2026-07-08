@@ -61,18 +61,27 @@ def _find_exe(name: str, fallback_path: str) -> str | None:
     return None
 
 
+def is_frozen() -> bool:
+    """True when running as the PyInstaller-packaged .exe. In that mode
+    every Python dependency is bundled — we only ever check the external
+    binaries (FFmpeg / Node), never pip-install anything (there is no
+    pip and sys.executable is the app, not python)."""
+    return bool(getattr(sys, "frozen", False))
+
+
 def check_all() -> dict:
     """Return status dict: {label: (ok: bool, detail: str)}."""
     status = {}
 
-    for imp_name, pip_name, label in REQUIREMENTS:
-        # Use find_spec — orders of magnitude faster than full import
-        # (avoids loading librosa/numpy/etc. at every startup)
-        spec = importlib.util.find_spec(imp_name)
-        if spec is not None:
-            status[label] = (True, "installed")
-        else:
-            status[label] = (False, pip_name)
+    if not is_frozen():
+        for imp_name, pip_name, label in REQUIREMENTS:
+            # Use find_spec — orders of magnitude faster than full import
+            # (avoids loading librosa/numpy/etc. at every startup)
+            spec = importlib.util.find_spec(imp_name)
+            if spec is not None:
+                status[label] = (True, "installed")
+            else:
+                status[label] = (False, pip_name)
 
     for exe_name, fallback, winget_id, label in EXTERNAL_TOOLS:
         path = _find_exe(exe_name, fallback)
@@ -104,6 +113,12 @@ def install_missing(status: dict, progress_cb=None) -> list[str]:
                 )
             except Exception as e:
                 errors.append(f"{label}: winget install failed — {e}")
+        elif is_frozen():
+            # Should never happen (all Python deps are bundled), but never
+            # attempt pip against the frozen exe — sys.executable is the
+            # app, not python. Surface it instead of crashing.
+            errors.append(f"{label}: manquant dans le build figé "
+                          f"(signale ce message au développeur)")
         else:
             # Python package — pip install
             try:

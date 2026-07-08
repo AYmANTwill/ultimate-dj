@@ -39,25 +39,20 @@ hiddenimports += collect_submodules("customtkinter")
 hiddenimports += collect_submodules("yt_dlp")
 hiddenimports += collect_submodules("mutagen")
 hiddenimports += collect_submodules("cloudscraper")
-hiddenimports += [
-    "app.engine.embeddings",
-    "app.engine.segmentation",
-    "app.engine.cooccurrence",
-    "app.engine.tasks",
-    "app.engine.backup",
-    "app.engine.repair",
-    "app.engine.tracklists",
-    "app.ui.activity_tray",
-    "app.ui.toast",
-    "app.ui.deck",
-    "app.ui.fastlist",
-    "app.ui.track_editor",
-    "app.ui.export_dialog",
-    "app.secrets_store",
-]
+# CRITICAL: every UI page is loaded lazily by STRING via
+# importlib.import_module (app/ui/app.py:_LazyPage) — PyInstaller's
+# static analysis can't see those, so opening Settings/Library/Mixer/…
+# in a frozen build would crash with ModuleNotFoundError. Grabbing the
+# whole `app` tree guarantees no page (or its new sub-package, e.g.
+# app.ui.settings.*) is ever missing.
+hiddenimports += collect_submodules("app")
 
-# Optional deps — load if present, else skipped (no hard failure)
-for opt in ("transformers", "torch", "panns_inference", "pyrubberband"):
+# We deliberately DO NOT bundle the heavy AI/ML deps (torch,
+# transformers, panns) even if they happen to be installed in the build
+# environment — they'd add ~1.5 GB. They are opt-in features that
+# app.deps installs on demand at runtime when the user enables them.
+# pyrubberband is tiny and safe to include if present.
+for opt in ("pyrubberband",):
     try:
         __import__(opt)
         hiddenimports.append(opt)
@@ -79,6 +74,11 @@ a = Analysis(
         "matplotlib", "pandas", "scipy.spatial.qhull",
         "tornado", "IPython", "jedi", "PyQt5", "PyQt6", "PySide2",
         "PySide6", "wx", "tkinter.test",
+        # Heavy opt-in AI stack — never bundle (installed at runtime by
+        # app.deps when the user turns AI features on). Keeps the shared
+        # build ~250 MB instead of ~2 GB.
+        "torch", "torchaudio", "torchvision", "transformers",
+        "panns_inference", "tokenizers", "safetensors", "sympy",
     ],
     noarchive=False,
 )
