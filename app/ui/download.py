@@ -174,6 +174,10 @@ class DownloadPage(ctk.CTkFrame):
         self._track_table: FastList | None = None
         self._stop_event  = threading.Event()
         self._pause_event = threading.Event()
+        # Events the worker is blocked on inside a modal (resync /
+        # selection). Stop sets them so a click never leaves the worker
+        # frozen on ev.wait() with the button stuck on "Downloading…".
+        self._pending_events: list[threading.Event] = []
         self._running = False
         self._status_throttle: UiThrottle | None = None
         self._progress_throttle: UiThrottle | None = None
@@ -470,7 +474,11 @@ class DownloadPage(ctk.CTkFrame):
     def _stop_download(self):
         self._stop_event.set()
         self._pause_event.clear()          # unblock if paused
-        self._set_status("Stopping after current track…", "warning")
+        # Release any modal the worker is waiting on so it can see the
+        # stop flag and exit instead of hanging on ev.wait().
+        for e in list(self._pending_events):
+            e.set()
+        self._set_status("Stopping…", "warning")
         self.stop_btn.configure(state="disabled")
 
     def _toggle_pause(self):
@@ -669,10 +677,13 @@ class DownloadPage(ctk.CTkFrame):
             # on a threading.Event until they answer.
             import threading
             ev = threading.Event()
+            self._pending_events.append(ev)
             self.after(0, lambda: self._ask_resync(
                 name, diff, decision, ev, bootstrapped=bootstrapped))
             ev.wait()
-            if not decision["proceed"]:
+            if ev in self._pending_events:
+                self._pending_events.remove(ev)
+            if self._stop_event.is_set() or not decision["proceed"]:
                 self.after(0, lambda: self._set_status(
                     "Sync annulé.", "text_dim"))
                 self.after(0, lambda: self._set_running(False))
@@ -681,9 +692,20 @@ class DownloadPage(ctk.CTkFrame):
         # The list of tracks the downloader actually pulls = "added"
         # only. "kept" tracks are already on disk and stay.
         tracks = diff["added"]
+        # AUTHORITATIVE disk check — the folder is the final word. Whatever
+        # the cache says (stale, missing) or however files were renamed,
+        # never re-download a song a matching file already exists for.
+        # This runs BEFORE the selection window so it can't offer, all
+        # pre-ticked, songs that are already there (the duplicate bug).
+        already, tracks = playlist_sync.split_present_absent(tracks, out)
+        n_present = len(diff["kept"]) + len(already)
+        if already:
+            self.after(0, lambda n=len(already): self._log(
+                f"↩  {n} déjà présents dans le dossier — ignorés "
+                f"(pas de re-téléchargement)"))
         if not tracks:
             self.after(0, lambda: self._set_status(
-                f"Rien de nouveau — {len(diff['kept'])} déjà sur le disque, "
+                f"Rien de nouveau — {n_present} déjà sur le disque, "
                 f"{len(diff['removed'])} retirés de la playlist.",
                 "success"))
             # Still apply the user's removal decision + refresh cache
@@ -699,10 +721,13 @@ class DownloadPage(ctk.CTkFrame):
             import threading
             sel = {"selected": None}
             ev_sel = threading.Event()
+            self._pending_events.append(ev_sel)
             self.after(0, lambda: self._ask_track_selection(
                 name, tracks, sel, ev_sel))
             ev_sel.wait()
-            if not sel["selected"]:
+            if ev_sel in self._pending_events:
+                self._pending_events.remove(ev_sel)
+            if self._stop_event.is_set() or not sel["selected"]:
                 self.after(0, lambda: self._set_status(
                     "Téléchargement annulé.", "text_dim"))
                 self.after(0, lambda: self._set_running(False))

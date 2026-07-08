@@ -40,6 +40,11 @@ class YoutubeDL:
     def __new__(cls, *args, **kwargs):
         return _yt_dlp()(*args, **kwargs)
 
+
+class _DownloadCancelled(Exception):
+    """Raised from a yt-dlp progress hook when the user hits Stop, so the
+    in-flight transfer aborts immediately instead of at the next track."""
+
 _BASE_CACHE: dict | None = None
 
 
@@ -315,6 +320,14 @@ def download_tracks_by_search(
                 def error(self, msg, *a):
                     captured_errors.append(str(msg))
 
+            # Abort the CURRENT download the instant Stop is pressed —
+            # yt-dlp fires progress_hooks every chunk, so raising here
+            # interrupts a slow/hung transfer mid-file instead of only
+            # between tracks (which left the UI stuck on "Downloading…").
+            def _cancel_hook(_d, _ev=stop_event):
+                if _ev is not None and _ev.is_set():
+                    raise _DownloadCancelled()
+
             opts = {
                 **base,
                 "format": "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio/best",
@@ -326,6 +339,8 @@ def download_tracks_by_search(
                 "quiet": True,
                 "no_warnings": True,
                 "logger": _CaptureLogger(),
+                "progress_hooks": [_cancel_hook],
+                "socket_timeout": 30,
             }
             if codec == "wav":
                 opts["postprocessor_args"] = _wav_postprocessor_args()
@@ -335,6 +350,8 @@ def download_tracks_by_search(
             try:
                 with YoutubeDL(opts) as ydl:
                     ydl.download([f"ytsearch1:{query}"])
+            except _DownloadCancelled:
+                break
             except Exception as e:
                 last_err = str(e)
                 log_error(f"yt-dlp search failed: {query}", e)

@@ -431,6 +431,47 @@ def test_compute_diff_preserves_spotify_order(tmp_path):
     assert [t["spotify_id"] for t in diff["removed"]] == ["z"]
 
 
+def test_track_matches_stem_tolerates_renames():
+    from app.engine.playlist_sync import _stem_tokens, track_matches_stem
+    # leading track number (app convention) must not block the match
+    assert track_matches_stem(
+        "Daft Punk", "Around The World",
+        _stem_tokens("01 - Daft Punk - Around The World"))
+    # Spotify multi-artist vs a filename carrying only the lead artist
+    assert track_matches_stem(
+        "Fred again.., Skrillex", "Baby again",
+        _stem_tokens("07. Fred again - Baby again"))
+    # different song → no match
+    assert not track_matches_stem(
+        "Daft Punk", "One More Time",
+        _stem_tokens("01 - Daft Punk - Around The World"))
+    # different artist, same generic title → no match
+    assert not track_matches_stem(
+        "Carl Cox", "Space",
+        _stem_tokens("Adam Beyer - Space"))
+
+
+def test_split_present_absent_is_authoritative(tmp_path):
+    """The disk is the final word: a song whose file already exists must
+    never be handed to the downloader, whatever the cache said. This is
+    the fix for the duplicate-download bug."""
+    from app.engine import playlist_sync
+    (tmp_path / "01 - Daft Punk - Around The World.mp3").write_bytes(b"x")
+    (tmp_path / "02 - Modjo - Lady.flac").write_bytes(b"x")
+    src = [
+        {"spotify_id": "a", "artist": "Daft Punk",
+         "title": "Around The World"},
+        {"spotify_id": "b", "artist": "Modjo", "title": "Lady"},
+        {"spotify_id": "c", "artist": "New Artist", "title": "Fresh Track"},
+    ]
+    present, absent = playlist_sync.split_present_absent(src, tmp_path)
+    assert [t["spotify_id"] for t in present] == ["a", "b"]
+    assert [t["spotify_id"] for t in absent] == ["c"]
+    # empty folder → everything is absent (nothing to skip)
+    _, absent2 = playlist_sync.split_present_absent(src, tmp_path / "void")
+    assert len(absent2) == 3
+
+
 def test_bootstrap_cache_matches_existing_folder(tmp_path):
     """A folder downloaded before the sync system existed must be
     recognised: matched files become `kept`, only new songs download."""

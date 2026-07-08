@@ -175,45 +175,104 @@ def _norm(s: str) -> str:
 _AUDIO_EXTS = (".mp3", ".wav", ".flac", ".m4a", ".ogg", ".oga",
                ".opus", ".aac")
 
+# A leading track number the downloader (or the user) prepends —
+# "01 - ", "07. ", "12_". Stripped before token matching so the number
+# never blocks a match.
+_NUM_PREFIX = re.compile(r"^\s*\d{1,3}\s*[-_.)]*\s*")
+
+
+def _tokens(s: str) -> set[str]:
+    return {t for t in _norm(s).split() if t}
+
+
+def _stem_tokens(stem: str) -> set[str]:
+    return _tokens(_NUM_PREFIX.sub("", stem))
+
+
+def track_matches_stem(artist: str, title: str,
+                       stem_tokens: set[str]) -> bool:
+    """Robust filename match, tolerant of the transforms the app (or the
+    user) applies to files: a leading track number, and Spotify's
+    multi-artist joined strings ("A, B & C") vs a filename that only
+    carries the lead artist. A match needs EVERY title token present
+    plus at least one artist token (or no artist to check)."""
+    tt = _tokens(title)
+    if not tt or not tt <= stem_tokens:
+        return False
+    at = _tokens(artist)
+    return not at or bool(at & stem_tokens)
+
+
+def folder_audio_index(folder: str | Path) -> list[tuple[str, set[str]]]:
+    """(filepath, stem-token-set) for every audio file directly in
+    ``folder``. Non-recursive on purpose — the downloader writes flat
+    into the chosen folder, and going recursive risks a same-named file
+    in an unrelated subfolder masking a genuinely-missing track."""
+    folder_p = Path(folder)
+    if not folder_p.is_dir():
+        return []
+    out: list[tuple[str, set[str]]] = []
+    for p in folder_p.iterdir():
+        if p.is_file() and p.suffix.lower() in _AUDIO_EXTS:
+            out.append((str(p), _stem_tokens(p.stem)))
+    return out
+
+
+def find_on_disk(track: dict,
+                 index: list[tuple[str, set[str]]]) -> str | None:
+    """Path of the file in ``index`` that already holds ``track``, or
+    None. THIS is the authority: the disk, not the cache."""
+    artist = track.get("artist", "")
+    title = track.get("title", "")
+    for path, stem_tokens in index:
+        if track_matches_stem(artist, title, stem_tokens):
+            return path
+    return None
+
+
+def split_present_absent(tracks: list[dict], folder: str | Path
+                         ) -> tuple[list[dict], list[dict]]:
+    """Partition ``tracks`` into (already_on_disk, still_missing) by
+    scanning the actual folder. Guarantees the downloader is never asked
+    to fetch a song a matching file already exists for — no duplicates,
+    whatever the cache says or however files were renamed."""
+    index = folder_audio_index(folder)
+    if not index:
+        return [], list(tracks)
+    present, absent = [], []
+    for t in tracks:
+        (present if find_on_disk(t, index) else absent).append(t)
+    return present, absent
+
 
 def bootstrap_cache_from_folder(source_tracks: list[dict],
                                  folder: str | Path) -> dict | None:
     """Synthesise a cache for a folder that was downloaded BEFORE the
-    sync system existed (or on another machine): fuzzy-match each source
+    sync system existed (or on another machine): match each source
     track against the audio files already sitting in ``folder``.
 
     Matched tracks then behave like ``kept`` in compute_diff, so a
     re-download of the same playlist only fetches the genuinely new
     songs instead of everything. Returns None when nothing matches
     (caller falls back to a full download)."""
-    folder_p = Path(folder)
-    if not folder_p.is_dir():
-        return None
-    by_stem: dict[str, str] = {}
-    for p in folder_p.iterdir():
-        if p.is_file() and p.suffix.lower() in _AUDIO_EXTS:
-            by_stem[_norm(p.stem)] = str(p)
-    if not by_stem:
+    index = folder_audio_index(folder)
+    if not index:
         return None
     tracks: list[CachedTrack] = []
     for t in source_tracks:
         sid = t.get("spotify_id")
         if not sid:
             continue
-        needle = _norm(f"{t.get('artist', '')} {t.get('title', '')}").strip()
-        if not needle:
-            continue
-        for stem, path in by_stem.items():
-            if needle in stem or stem in needle:
-                tracks.append({"spotify_id": sid,
-                               "artist": t.get("artist", ""),
-                               "title": t.get("title", ""),
-                               "filepath": path})
-                break
+        fp = find_on_disk(t, index)
+        if fp:
+            tracks.append({"spotify_id": sid,
+                           "artist": t.get("artist", ""),
+                           "title": t.get("title", ""),
+                           "filepath": fp})
     if not tracks:
         return None
     return {"playlist_id": "", "playlist_name": "",
-            "folder": str(folder_p), "bootstrapped": True,
+            "folder": str(Path(folder)), "bootstrapped": True,
             "tracks": tracks}
 
 
