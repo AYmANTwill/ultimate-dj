@@ -364,8 +364,8 @@ shows the contribution from each.
   generalisation lever)
 - Reach 50 L5 votes in the Mixer (2/50) so the feedback layer becomes
   measurable
-- setlist.fm fallback activation — paste the free API key + a fetch
-  button (engine + tests already shipped)
+- setlist.fm fallback activation — paste the free API key (the
+  test/fetch button now ships in Settings; engine + tests done)
 - Finish the silent-swallow audit (data-paths done, best-effort/UI
   sites remain)
 - Code signing (SmartScreen) on the shareable build

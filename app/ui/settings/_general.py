@@ -104,6 +104,20 @@ class GeneralMixin:
         self.slfm_key = self._text_row(
             scroll, "API key", self.cfg.get("setlistfm_api_key", ""),
             show="*")
+        slfm_row = ctk.CTkFrame(scroll, fg_color="transparent")
+        slfm_row.pack(fill="x", pady=(0, 2))
+        self.slfm_artist = ctk.CTkEntry(
+            slfm_row, width=260, fg_color=COLORS["bg_input"])
+        self.slfm_artist.insert(0, "Charlotte de Witte")
+        self.slfm_artist.pack(side="left", padx=(4, 8))
+        ctk.CTkButton(
+            slfm_row, text="🧪 Tester la clé (3 setlists)", width=220,
+            fg_color=COLORS["accent"], command=self._slfm_test,
+        ).pack(side="left")
+        self.slfm_status = ctk.CTkLabel(
+            scroll, text="", font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_dim"], wraplength=720, justify="left")
+        self.slfm_status.pack(anchor="w", padx=4, pady=(2, 6))
 
         # ── 1001tracklists account (for the scraping pipeline) ─
         # Guest users get rate-limited HARD on their IP after a few
@@ -371,3 +385,45 @@ class GeneralMixin:
                 text=f"erreur logout : {str(e)[:60]}",
                 text_color=COLORS["error"])
 
+
+    def _slfm_test(self):
+        """Save the pasted key, then prove it live: fetch 3 setlists
+        into the cooccurrence cache (same format as 1001TL scrapes) —
+        the C2 fallback is active the moment this succeeds."""
+        key = self.slfm_key.get().strip()
+        if not key:
+            self.slfm_status.configure(
+                text="Colle d'abord une clé API (setlist.fm/settings/api).",
+                text_color=COLORS["warning"])
+            return
+        artist = self.slfm_artist.get().strip() or "Charlotte de Witte"
+        cfg = load_config()
+        cfg["setlistfm_api_key"] = key
+        save_config(cfg)
+        self.cfg["setlistfm_api_key"] = key
+        self.slfm_status.configure(
+            text=f"Interrogation setlist.fm ({artist})…",
+            text_color=COLORS["text_dim"])
+        import threading
+
+        def work():
+            try:
+                from app.engine import setlist_fm
+                paths = setlist_fm.fetch_and_cache(artist, limit=3)
+                if paths:
+                    msg = (f"✓ Clé OK — {len(paths)} setlists en cache dans "
+                           f"data/tracklists/. Reconstruis la matrice "
+                           f"(section IA) pour les intégrer au corpus.")
+                    color = COLORS["success"]
+                else:
+                    msg = ("Clé acceptée mais aucune setlist avec titres "
+                           "pour cet artiste — essaie un autre nom.")
+                    color = COLORS["warning"]
+            except Exception as e:
+                msg = f"✗ {str(e)[:160]}"
+                color = COLORS["error"]
+            self.after(0, lambda: self.slfm_status.configure(
+                text=msg, text_color=color))
+
+        threading.Thread(target=work, daemon=True,
+                         name="slfm-test").start()

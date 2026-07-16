@@ -656,9 +656,9 @@ const QUESTS = [
  {id:'CR', l:'⚔ Relancer le batch (608)', lane:'C', x:600, y:545, st:'done', xp:25, deps:['C1','S2'], star:true,
   d:"IP sondée libre le 2026-07-05 → batch relancé en arrière-plan avec le downloader réparé. Les [ok] défilent.",
   f:'scratchpad c1_batch_runner.py', ok:'Relancé — les paires décolleront à la fin du run'},
- {id:'C2', l:'C2 · Fallback setlist.fm', lane:'C', x:760, y:508, st:'active', xp:35, prog:.8, deps:['map'],
-  d:"Squelette livré : client REST stdlib, mapping cover→artiste réel, écriture au format exact du cache cooccurrence, 3 tests mockés. Reste : ta clé API gratuite (config setlistfm_api_key) + un bouton UI.",
-  f:'app/engine/setlist_fm.py', ok:'Corpus continue de croître sans 1001TL',
+ {id:'C2', l:'C2 · Fallback setlist.fm', lane:'C', x:760, y:508, st:'active', xp:35, prog:.95, deps:['map'],
+  d:"Squelette livré (client REST stdlib, mapping cover→artiste réel, format exact du cache cooccurrence, 3 tests mockés) + bouton « 🧪 Tester la clé (3 setlists) » dans Settings livré 2026-07-15 : sauve la clé, fetch en thread, statut inline, vérifié en build headless. Il ne reste QUE ta clé gratuite.",
+  f:'app/engine/setlist_fm.py · ui/settings/_general.py', ok:'Corpus continue de croître sans 1001TL',
   gate:'Clé API gratuite à créer (setlist.fm/settings/api)'},
  // — Découvertes (side-quests résolues en route)
  {id:'S1', l:'S1 · Ordre Spotify → M3U', lane:'S', x:270, y:640, st:'done', xp:15, deps:['map'],
