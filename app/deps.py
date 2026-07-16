@@ -53,6 +53,13 @@ def _find_python() -> str:
 
 
 def _find_exe(name: str, fallback_path: str) -> str | None:
+    # Packaged build ships ffmpeg/node in <exe_dir>/bin — check there
+    # first so friends' machines never fall through to winget.
+    if getattr(sys, "frozen", False):
+        bundled = os.path.join(os.path.dirname(sys.executable),
+                               "bin", f"{name}.exe")
+        if os.path.isfile(bundled):
+            return bundled
     exe = shutil.which(name) or shutil.which(f"{name}.exe")
     if exe:
         return exe

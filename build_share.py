@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -68,6 +69,49 @@ def build() -> Path:
     return out
 
 
+def bundle_binaries(out: Path) -> tuple[list[str], list[str]]:
+    """Copy ffmpeg/ffprobe/node next to the exe (bin/) so the friend
+    installs NOTHING. Each copy is smoke-run from its new home — a
+    binary that drags external DLLs is removed and reported instead of
+    shipping broken."""
+    print("== Bundle des binaires externes (bin/) ==")
+    bin_dir = out / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    ver_flags = {"ffmpeg": "-version", "ffprobe": "-version",
+                 "node": "--version"}
+    bundled, missing = [], []
+    for name, ver_flag in ver_flags.items():
+        src = shutil.which(name) or shutil.which(f"{name}.exe")
+        if not src:
+            missing.append(name)
+            print(f"  [!] {name} introuvable sur CETTE machine — non bundle")
+            continue
+        dst = bin_dir / f"{name}.exe"
+        shutil.copy2(src, dst)
+        try:
+            subprocess.run([str(dst), ver_flag], capture_output=True,
+                           timeout=20, check=True, cwd=str(bin_dir))
+            bundled.append(name)
+            print(f"  {name}: OK ({dst.stat().st_size / 1e6:.0f} MB)")
+        except Exception:
+            dst.unlink(missing_ok=True)
+            missing.append(name)
+            print(f"  [!] {name}: la copie ne tourne pas seule "
+                  f"(DLLs manquantes ?) — non bundle")
+    if not any(bin_dir.iterdir()):
+        bin_dir.rmdir()
+    return bundled, missing
+
+
+_TOOLS_INCLUDED = """3. FFmpeg et Node.js sont DEJA INCLUS (dossier bin) —
+   rien d'autre a installer."""
+
+_TOOLS_WINGET = """3. Au premier lancement, l'app installe ce qui lui manque tout seul :
+   - FFmpeg et Node.js via winget (accepte si Windows demande).
+   Si winget n'est pas dispo, installe-les a la main :
+     FFmpeg  : https://www.gyan.dev/ffmpeg/builds/  (ajoute /bin au PATH)
+     Node.js : https://nodejs.org/  (version LTS)"""
+
 _README_FR = """ULTIMATE DJ — a lire avant de lancer
 =====================================
 
@@ -78,11 +122,7 @@ _README_FR = """ULTIMATE DJ — a lire avant de lancer
    Windows SmartScreen peut afficher un avertissement (editeur inconnu) :
    clique "Informations complementaires" puis "Executer quand meme".
 
-3. Au premier lancement, l'app installe ce qui lui manque tout seul :
-   - FFmpeg et Node.js via winget (accepte si Windows demande).
-   Si winget n'est pas dispo, installe-les a la main :
-     FFmpeg  : https://www.gyan.dev/ffmpeg/builds/  (ajoute /bin au PATH)
-     Node.js : https://nodejs.org/  (version LTS)
+{tools}
 
 4. Pour telecharger depuis Spotify : Reglages -> Spotify API -> colle un
    Client ID + Secret (gratuits sur developer.spotify.com).
@@ -97,13 +137,18 @@ Aucune connexion n'est requise pour gerer ta bibliotheque locale.
 def main() -> None:
     preflight()
     out = build()
-    (out / "LISEZ-MOI.txt").write_text(_README_FR, encoding="utf-8")
+    bundled, missing = bundle_binaries(out)
+    tools = _TOOLS_INCLUDED if not missing else _TOOLS_WINGET
+    (out / "LISEZ-MOI.txt").write_text(
+        _README_FR.format(tools=tools), encoding="utf-8")
     size_mb = sum(f.stat().st_size for f in out.rglob("*")
                   if f.is_file()) / 1e6
     print("\n== Termine ==")
     print(f"  Dossier : {out}")
     print(f"  Taille  : {size_mb:.0f} MB")
     print(f"  Fichiers: {sum(1 for _ in out.rglob('*'))}")
+    print(f"  Bundles : {', '.join(bundled) or 'aucun'}"
+          + (f"  (manquants : {', '.join(missing)})" if missing else ""))
     print("\n  -> Zippe le dossier 'UltimateDJ' entier et envoie-le.")
     print("     Ton ami decompresse et double-clique UltimateDJ.exe.")
 

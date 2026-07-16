@@ -41,6 +41,16 @@ for candidate in [r"C:\Program Files\nodejs", os.path.expandvars(r"%LOCALAPPDATA
 
 
 def main():
+    # Packaged-exe helper mode: the embedded browser can't spawn
+    # `python -m app.ui._browser_launcher` (sys.executable IS the app,
+    # not python), so browser.py re-launches this same exe with a
+    # sentinel argv — route straight to the webview launcher instead of
+    # booting the full GUI a second time.
+    if len(sys.argv) >= 2 and sys.argv[1] == "--browser-launcher":
+        sys.argv = [sys.argv[0]] + sys.argv[2:]
+        from app.ui._browser_launcher import main as launcher_main
+        sys.exit(launcher_main())
+
     # Step 1: Auto-install missing dependencies (shows splash if needed)
     from app.deps import ensure_deps
     ensure_deps()

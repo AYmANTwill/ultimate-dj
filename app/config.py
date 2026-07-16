@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -199,7 +200,20 @@ def save_config(cfg: dict):
         json.dump(cfg, f, indent=2)
 
 
+def _bundled_bin(name: str) -> str | None:
+    """<exe_dir>/bin/<name>.exe in the packaged build — the share bundle
+    ships ffmpeg/node so friends install nothing. None outside frozen
+    mode or when the file isn't there (winget path still applies)."""
+    if not getattr(sys, "frozen", False):
+        return None
+    p = os.path.join(os.path.dirname(sys.executable), "bin", f"{name}.exe")
+    return p if os.path.isfile(p) else None
+
+
 def get_ffmpeg() -> str | None:
+    bundled = _bundled_bin("ffmpeg")
+    if bundled:
+        return bundled
     cfg = load_config()
     p = cfg["ffmpeg_path"]
     if os.path.isfile(p):
@@ -209,6 +223,9 @@ def get_ffmpeg() -> str | None:
 
 
 def get_node() -> str | None:
+    bundled = _bundled_bin("node")
+    if bundled:
+        return bundled
     node = shutil.which("node") or shutil.which("node.exe")
     if node:
         return node

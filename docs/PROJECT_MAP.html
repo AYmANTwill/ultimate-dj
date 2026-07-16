@@ -628,9 +628,12 @@ const QUESTS = [
  {id:'B4', l:'B4 · CI GitHub Actions', lane:'B', x:430, y:300, st:'done', xp:20, deps:['B1'],
   d:"ci.yml sur windows-latest : pip requirements → ruff (non-bloquant pour l'instant) → pytest bloquant. Vérifié : aucun import torch/playwright top-level ne casse la collection.",
   f:'.github/workflows/ci.yml', ok:'Livré 2026-07-05 — badge au prochain push'},
- {id:'B5', l:'B5 · Installeur + signing', lane:'B', x:580, y:300, st:'available', xp:15, deps:['B4'],
-  d:"MSI/NSIS + signature de code pour passer SmartScreen.",
-  f:'ultimate_dj.spec', ok:'Install double-clic sans warning', gate:'Backlog — après un premier badge CI vert'},
+ {id:'B5', l:'B5 · Build partageable (exe)', lane:'B', x:580, y:300, st:'done', xp:40, deps:['B4'],
+  d:"PyInstaller onedir VÉRIFIÉ : collect_submodules('app') (pages chargées par string — invisibles à l'analyse statique), torch/transformers exclus (−1,5 GB), deps.py frozen-safe (jamais de pip dans l'exe), build_share.py pré-vol (Python 3.10/3.11 64-bit + imports cœur), LISEZ-MOI.txt. 540 MB, exe lancé et vivant 15 s. Signing = backlog (warning SmartScreen assumé).",
+  f:'ultimate_dj.spec · build_share.py', ok:'Livré 2026-07-08 — dist/UltimateDJ zippable'},
+ {id:'B6', l:'B6 · Zéro-dépendance amis', lane:'B', x:730, y:300, st:'done', xp:30, deps:['B5'],
+  d:"ffmpeg/ffprobe/node copiés dans dist/bin (smoke-run à la copie : une DLL manquante = binaire rejeté, pas expédié), config.get_ffmpeg/get_node + deps._find_exe résolvent bin/ D'ABORD en mode figé, WebView2 frozen-safe (l'exe se relance avec --browser-launcher routé par run.py — plus de python -m impossible), icône vinyle multi-tailles.",
+  f:'build_share.py · run.py · app/config.py · app/ui/browser.py', ok:'Rebuild vérifié 2026-07-15'},
  {id:'B2', l:'B2 · Audit 122 except:pass', lane:'B', x:270, y:372, st:'active', xp:30, prog:.7, deps:['map'],
   d:"Passe data-path faite : 11 log_warning ajoutés (JSON corrompus library/export, scrape→cache discovery, BLOB embeddings, durée 0 analyzer) sans toucher au contrôle de flux. Restent les sites best-effort/UI, majoritairement légitimes.",
   f:'app/engine/', ok:'Data-paths tracés · 2026-07-05'},
@@ -670,6 +673,12 @@ const QUESTS = [
  {id:'S4', l:'S4 · Sélection tracks + resync bootstrap', lane:'S', x:800, y:640, st:'done', xp:25, deps:['S1'],
   d:"Demandes user : ① modal de sélection avec filtre/compteur/Tout-Rien avant tout téléchargement de playlist (100+ songs) ; ② bootstrap du cache depuis un dossier déjà téléchargé AVANT le système de sync (match flou des fichiers) → seuls les nouveaux morceaux téléchargent. Bonus : fix double-espaces dans la clé floue partagée.",
   f:'app/ui/download.py · app/engine/playlist_sync.py', ok:'43/43 tests · 2026-07-05'},
+ {id:'S5', l:'S5 · Re-download + Stop coincé', lane:'S', x:950, y:640, st:'done', xp:25, deps:['S4'],
+  d:"2 bugs user : ① playlist déjà téléchargée re-téléchargeait tout — le disque devient l'autorité (split_present_absent + matching tolérant aux renommages : préfixe numérique strippé, tokens titre ⊆ stem + ≥1 token artiste) ; ② Stop restait coincé — hook d'annulation yt-dlp (_DownloadCancelled) + socket_timeout 30 s + libération des modales en attente.",
+  f:'app/engine/playlist_sync.py · downloader.py · ui/download.py', ok:'55/55 tests · commit 85ebae7'},
+ {id:'S6', l:'S6 · SSL horloge', lane:'S', x:1075, y:640, st:'done', xp:15, deps:['S5'],
+  d:"Spotify KO des deux côtés (API + WebView2) : l'horloge Windows retardait de 7 jours → cert fraîchement renouvelé « pas encore valide ». Diag posé (DigiCert authentique, DNS/hosts sains), l'app mesure désormais le décalage via un header Date HTTP et l'affiche dans l'erreur. Bonus : nom m3u8 émoji-safe (Tk affichait ¿Þ).",
+  f:'app/engine/spotify.py · playlist_sync.py', ok:'Diagnostiqué + auto-explicatif · 2026-07-15'},
 ];
 const qById = Object.fromEntries(QUESTS.map(q=>[q.id,q]));
 

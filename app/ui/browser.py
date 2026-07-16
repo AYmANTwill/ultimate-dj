@@ -117,18 +117,32 @@ def _launch_webview(url: str, title: str) -> subprocess.Popen | None:
     creationflags = 0
     if _IS_WIN:
         creationflags = subprocess.CREATE_NO_WINDOW
+    frozen = bool(getattr(sys, "frozen", False))
     try:
-        # First check pywebview is importable
-        check = subprocess.run(
-            [sys.executable, "-c", "import webview"],
-            capture_output=True, timeout=8,
-            creationflags=creationflags,
-        )
-        if check.returncode != 0:
-            return None
+        if not frozen:
+            # First check pywebview is importable (probe in a subprocess
+            # so a broken install can't take down the main app). In the
+            # packaged exe webview is bundled — no probe possible or
+            # needed, and `-c` wouldn't work anyway.
+            check = subprocess.run(
+                [sys.executable, "-c", "import webview"],
+                capture_output=True, timeout=8,
+                creationflags=creationflags,
+            )
+            if check.returncode != 0:
+                return None
         storage = str(_profile_dir())
+        if frozen:
+            # The packaged exe can't run `-m app.ui._browser_launcher`
+            # (sys.executable IS the app, not python) — it re-launches
+            # ITSELF with a sentinel argv that run.py routes to the
+            # launcher before booting the GUI.
+            cmd = [sys.executable, "--browser-launcher", url, title, storage]
+        else:
+            cmd = [sys.executable, "-m", "app.ui._browser_launcher",
+                   url, title, storage]
         return subprocess.Popen(
-            [sys.executable, "-m", "app.ui._browser_launcher", url, title, storage],
+            cmd,
             cwd=str(project_root),
             stdout=open(log_path, "ab"), stderr=subprocess.STDOUT,
             creationflags=creationflags,

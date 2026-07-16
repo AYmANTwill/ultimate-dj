@@ -268,7 +268,9 @@ shows the contribution from each.
   removed bytes are saved under `data/repair_tails/` so `undo_trailing`
   restores byte-identical files. Dry-run on the real library: 363/451
   flagged, 0 false positives. Legit trailing chunks (`LIST`, `cue `…)
-  are flagged `review` and never touched.
+  are flagged `review` and never touched. After a 10-file pilot verified
+  in Rekordbox, all 363 were repaired and machine-verified (0 failures,
+  full undo retained).
 - **Write guard rails** — per-format tag-write opt-in
   (`write_tags_wav/flac/m4a`, all default OFF, survive `force=True`),
   magic-byte pre-flight on every non-MP3, and WAV writes are
@@ -334,16 +336,39 @@ shows the contribution from each.
   NumPy 2.2 and killed librosa.load entirely), polyphase resampling on
   all fixed-rate loads, repair scans now persist the ⚠ corrupt flags,
   and a setlist.fm API-key field in Settings activates the fallback.
+- **Corpus ×12.8** — 604 corpus tracks ingested end-to-end by the
+  pipeline itself (embeddings kept, audio purged by design, rows now
+  survive library syncs): L2 pairs 584 → 7 468, L4 retrained on
+  44 776 examples.
+- **`settings.py` split** — the 2 129-line monolith became a 6-file
+  package (all < 800 LOC) with verbatim bodies and a headless-build
+  check.
+- **Shareable Windows build** — `python build_share.py` produces a
+  verified folder app: environment preflight (Python 3.10/3.11,
+  64-bit, core imports), string-imported pages collected into the
+  bundle, torch/transformers excluded (−1.5 GB), ffmpeg/ffprobe/node
+  copied into `bin/` and smoke-run at copy time, frozen-safe embedded
+  browser (the exe relaunches itself with `--browser-launcher`), app
+  icon. Friends unzip and double-click — no Python, no pip, no winget.
+- **Download hardening** — a playlist folder that already exists
+  resyncs with the disk as authority (rename-tolerant matching), Stop
+  cancels mid-download instead of hanging, SSL failures self-diagnose
+  Windows clock skew (a 7-day-late clock rejected Spotify's freshly
+  rotated cert while every older cert still passed), and emoji-only
+  playlist names get a safe `.m3u8` filename.
 
 ### Next up
-- Run the v2 repair on the 363 flagged WAVs (10-file Rekordbox-verified
-  pilot first — the tool ships, the click is the owner's)
-- Corpus growth to 1 500 co-occurrence pairs (downloads finally work;
-  batch resumable)
-- Split `app/ui/settings.py` (1 959 LOC) into a `settings/` package
-- L4 model evaluation harness — back-test against held-out pairs,
-  report accuracy / AUC
-- Installer + code signing (SmartScreen) once CI is green
+- Finish the CLAP embedding migration (re-encode → rebuild → retrain),
+  then re-run the per-track evaluation (lite baseline: AUC 0.546 on
+  unseen tracks — the model memorises identities, CLAP is the
+  generalisation lever)
+- Reach 50 L5 votes in the Mixer (2/50) so the feedback layer becomes
+  measurable
+- setlist.fm fallback activation — paste the free API key + a fetch
+  button (engine + tests already shipped)
+- Finish the silent-swallow audit (data-paths done, best-effort/UI
+  sites remain)
+- Code signing (SmartScreen) on the shareable build
 - Continuous-learning auto-trigger — fire `enrich_corpus()` when ≥ N
   new tracks land in the library
 
