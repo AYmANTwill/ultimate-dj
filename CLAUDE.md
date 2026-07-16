@@ -50,6 +50,12 @@ moves, update its État column AND append a dated line to its Journal
 - **Sync README before every push.** Update the AI roadmap table and
   "Done in vX / Next up" lists in the same commit as the code change
   if the roadmap status moves.
+- **Keep `docs/LAUNCH_PLAN.md` current.** It is the standalone runbook
+  for shipping the FINAL app (GO/NO-GO gates, build, verification,
+  friend-machine acceptance, distribution). Update it in the same
+  commit as any change touching build/packaging/dependencies/first-run
+  /distribution (+ dated line in its §9 journal). It is EXECUTED only
+  when the user declares the app complete — never before.
 - **Default to writing no comments.** Code should be self-explanatory.
   Add a comment only when the WHY is non-obvious (workaround for a
   specific bug, hidden invariant, surprising behaviour).
