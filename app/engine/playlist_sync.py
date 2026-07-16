@@ -287,7 +287,12 @@ def write_m3u(folder: str | Path, playlist_name: str,
     Rekordbox / Engine / VLC import this file instead. Overwritten on
     every sync; entries whose file is gone are skipped. Never touches
     the audio files themselves."""
-    safe = re.sub(r'[<>:"/\\|?*]+', "_", playlist_name).strip() or "playlist"
+    safe = re.sub(r'[<>:"/\\|?*]+', "_", playlist_name)
+    # Astral-plane chars (emoji) render as garbage in Tk and confuse
+    # some DJ tools' m3u import — drop them from the FILENAME only
+    # (track titles inside the file keep full unicode).
+    safe = "".join(ch for ch in safe if ord(ch) <= 0xFFFF)
+    safe = safe.strip().rstrip(". ") or "playlist"
     p = Path(folder) / f"{safe}.m3u8"
     folder_res = Path(folder).resolve()
     lines = ["#EXTM3U"]

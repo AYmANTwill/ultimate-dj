@@ -74,6 +74,37 @@ def _track_item(t: dict) -> dict | None:
     }
 
 
+def _clock_skew_hint(err: str) -> str:
+    """'certificate is not yet valid / has expired' almost always means the
+    Windows clock is wrong: a skewed clock rejects freshly rotated Spotify
+    certs while older certs (google...) still pass, which looks like a
+    Spotify-only outage. Measure the real skew through a plain-HTTP Date
+    header so the check itself can't be broken by the same TLS failure."""
+    if "CERTIFICATE_VERIFY_FAILED" not in err:
+        return ""
+    try:
+        from datetime import datetime, timezone
+        from email.utils import parsedate_to_datetime
+
+        import requests
+
+        r = requests.head("http://www.google.com", timeout=5,
+                          allow_redirects=False)
+        real = parsedate_to_datetime(r.headers["Date"])
+        skew_s = (datetime.now(timezone.utc) - real).total_seconds()
+        days = abs(skew_s) / 86400
+        if days >= 1:
+            direction = "retarde" if skew_s < 0 else "avance"
+            return (f" — l'horloge Windows {direction} de {days:.0f} jour(s) !"
+                    " Corrige : Paramètres > Heure et langue > Date et heure"
+                    " > Synchroniser maintenant")
+        return (" — certificat TLS rejeté alors que l'horloge est juste :"
+                " un antivirus/proxy intercepte peut-être le HTTPS")
+    except Exception:
+        return (" — certificat TLS rejeté : vérifie la date/heure Windows"
+                " (cause n°1) ou un antivirus qui inspecte le HTTPS")
+
+
 # ── Public API ──────────────────────────────────────────────────
 
 def fetch_playlist(url: str) -> tuple[str, list[dict], str]:
@@ -103,7 +134,7 @@ def fetch_playlist(url: str) -> tuple[str, list[dict], str]:
         log_error(f"Spotify fetch failed ({kind}): {url}", e)
         if "404" in err or "Resource not found" in err:
             return "", [], f"{kind.title()} not found (404) — check the URL"
-        return "", [], f"Spotify API error: {err[:150]}"
+        return "", [], f"Spotify API error: {err[:150]}{_clock_skew_hint(err)}"
 
 
 def _fetch_track(sp, url: str) -> tuple[str, list[dict], str]:

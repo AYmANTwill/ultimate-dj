@@ -523,6 +523,19 @@ def test_write_m3u_orders_entries(tmp_path):
     assert refs == ["First Track.mp3", "Second Track.mp3"]
 
 
+def test_write_m3u_emoji_name_gets_safe_filename(tmp_path):
+    from app.engine import playlist_sync
+    f1 = tmp_path / "A.mp3"
+    f1.write_bytes(b"x")
+    tracks = [{"spotify_id": "1", "artist": "A", "title": "T",
+               "filepath": str(f1)}]
+    p = playlist_sync.write_m3u(tmp_path, "\U0001F5A4\U0001FA78", tracks)
+    assert p is not None and p.name == "playlist.m3u8"
+    p2 = playlist_sync.write_m3u(
+        tmp_path, "\U0001F5A4 Mix \U0001F525", tracks)
+    assert p2 is not None and p2.name == "Mix.m3u8"
+
+
 def test_estimate_true_kbps_mapping():
     from app.engine.analyzer import estimate_true_kbps
     assert estimate_true_kbps(0) == 0
