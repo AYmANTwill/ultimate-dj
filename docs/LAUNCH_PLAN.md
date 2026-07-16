@@ -22,7 +22,7 @@ Le lancement s'exécute quand TOUTES les cases sont cochées. Statut au
 | G2 | Tests verts en CI (badge GitHub Actions) | ✅ 56/56 local — vérifier le badge au GO |
 | G3 | Build partageable vérifié (B5+B6) | ✅ 928 Mo, exe vivant, bin/ smoke-testé |
 | G4 | Migration CLAP terminée + éval per-track ≥ baseline | 🟡 en cours (analyse ~100/607) — AUC unseen à battre : 0.546 |
-| G5 | B2 audit silent-swallows terminé | 🟡 70 % (data-paths faits, reste best-effort/UI) |
+| G5 | B2 audit silent-swallows terminé | ✅ clos 2026-07-15 — 13 log_warning data-paths, reste classé légitime, politique « nouveau swallow data = log » |
 | G6 | C2 setlist.fm actif (clé collée + bouton 🧪 vert) | 🟡 bouton livré, clé user manquante |
 | G7 | 50 votes L5 → feedback mesurable au breakdown | 🟡 2/50 (action user, pas du code) |
 | G8 | Décision signing : certificat code OU SmartScreen assumé dans LISEZ-MOI | 🟡 par défaut : assumé (documenté) |
@@ -115,4 +115,5 @@ git tag vX.Y && git push origin vX.Y
 
 | Date | Changement |
 |------|-----------|
+| 2026-07-15 | G5 (B2 silent-swallows) → ✅. GO désormais bloqué par : CLAP (G4), clé setlist.fm (G6), votes L5 (G7). |
 | 2026-07-15 | Création. B5+B6 verts (build 928 Mo vérifié, bin/ bundlé, WebView2 frozen-safe, icône). GO bloqué par : CLAP (G4), B2 (G5), clé setlist.fm (G6), votes L5 (G7). |

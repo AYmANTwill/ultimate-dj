@@ -29,8 +29,10 @@ def _load_taste() -> dict:
     if TASTE_DB.exists():
         try:
             return json.loads(TASTE_DB.read_text())
-        except Exception:
-            pass
+        except Exception as e:
+            from app.logger import log_warning
+            log_warning(f"discovery: taste profile corrompu, reset "
+                        f"({TASTE_DB.name}): {e}")
     return {
         "liked_artists": {},       # artist -> count
         "liked_bpm_range": [120, 150],
@@ -111,8 +113,10 @@ def _load_setlist_cache() -> list[dict]:
     if SETLIST_CACHE.exists():
         try:
             return json.loads(SETLIST_CACHE.read_text())
-        except Exception:
-            pass
+        except Exception as e:
+            from app.logger import log_warning
+            log_warning(f"discovery: cache setlists corrompu, ignoré "
+                        f"({SETLIST_CACHE.name}): {e}")
     return []
 
 

@@ -308,8 +308,11 @@ shows the contribution from each.
   2026-07-05); needs a free API key in `setlistfm_api_key`.
 - **Tests 12 → 43** — repair v2 (16), parser fixture, matcher
   precision, L4-None, playlist diff order, m3u, bootstrap, resolve
-  regression, write guards. Plus a data-path pass adding 11
-  `log_warning` to previously silent swallows.
+  regression, write guards. Plus a completed silent-swallow audit:
+  13 `log_warning` added on data paths (corrupt JSON, scrape cache,
+  embedding blobs, taste profile), every remaining swallow classified
+  as legitimate teardown/cleanup/migration best-effort — new data-path
+  swallows must log, as policy.
 - **CI** — GitHub Actions (`windows-latest`): ruff (non-blocking for
   now) + pytest on every push/PR.
 - **Living project map** — `docs/PROJECT_MAP.md` (subsystems, DB, AI
@@ -366,8 +369,6 @@ shows the contribution from each.
   measurable
 - setlist.fm fallback activation — paste the free API key (the
   test/fetch button now ships in Settings; engine + tests done)
-- Finish the silent-swallow audit (data-paths done, best-effort/UI
-  sites remain)
 - Code signing (SmartScreen) on the shareable build
 - Continuous-learning auto-trigger — fire `enrich_corpus()` when ≥ N
   new tracks land in the library
