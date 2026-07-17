@@ -326,7 +326,7 @@ au fil des sessions. **Plan d'exécution détaillé des 4 chantiers actifs
 | Item | Description | État |
 |---|---|---|
 | **C1** | Scraper d'autres catalogues à fort taux de match (Pegassi, Maceo Plex…) | ✅ **objectif 1500 dépassé ×5** le 2026-07-07 : 604 tracks corpus ingérés (embeddings-only), **7 468 paires**, L4 réentraîné sur 44 776 exemples |
-| **C2** | Fallback setlist.fm (`engine/setlist_fm.py`) si 1001TL verrouille | 🟡 95 % — squelette 2026-07-05 (REST stdlib, mapping cover→artiste, format cache cooccurrence, 3 tests mockés) + bouton « 🧪 Tester la clé » livré 2026-07-15 (Settings : sauve la clé, fetch 3 setlists en thread, statut inline ; vérifié en build headless). **Reste uniquement ta clé gratuite (setlist.fm/settings/api)** |
+| **C2** | Fallback setlist.fm (`engine/setlist_fm.py`) si 1001TL verrouille | ✅ 100 % (2026-07-16 : clé user enregistrée + test API réel — setlist Solomun cachée). Historique : squelette 2026-07-05 (REST stdlib, mapping cover→artiste, format cache cooccurrence, 3 tests mockés) + bouton « 🧪 Tester la clé » livré 2026-07-15 (Settings : sauve la clé, fetch 3 setlists en thread, statut inline ; vérifié en build headless). **Reste uniquement ta clé gratuite (setlist.fm/settings/api)** |
 | **C3** | Exposer le delta L4-vs-heuristique dans le breakdown du Mixer | ✅ livré 2026-07-02 (`l4_verdict` engine + bannière popup + colonne L4 + encart doute) — à valider visuellement dans l'app |
 | **C4** | Auto-retrain aussi après chaque `cooccurrence.rebuild()` (pas seulement à Δ10 votes) | ✅ livré 2026-07-02 (hook gardé par toggle `ai_auto_retrain` + changement réel de paires) |
 

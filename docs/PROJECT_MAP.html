@@ -671,7 +671,7 @@ const QUESTS = [
  {id:'CL', l:'CL · Apprentissage continu', lane:'C', x:1075, y:472, st:'done', xp:20, deps:['CLAP'],
   d:"maybe_auto_enrich() : au Sync, si ≥ 25 nouveaux morceaux depuis le dernier run et que l'opt-in ai_auto_enrich est coché, enrich_corpus part en thread daemon (tray). Baseline anti-surprise au premier enable. 4 gardes testées.",
   f:'training_pipeline · ui/library.py · Réglages', ok:'Livré 2026-07-15 — dernier item code du backlog'},
- {id:'C2', l:'C2 · Fallback setlist.fm', lane:'C', x:760, y:508, st:'active', xp:35, prog:.95, deps:['map'],
+ {id:'C2', l:'C2 · Fallback setlist.fm', lane:'C', x:760, y:508, st:'done', xp:35, deps:['map'],
   d:"Squelette livré (client REST stdlib, mapping cover→artiste réel, format exact du cache cooccurrence, 3 tests mockés) + bouton « 🧪 Tester la clé (3 setlists) » dans Settings livré 2026-07-15 : sauve la clé, fetch en thread, statut inline, vérifié en build headless. Il ne reste QUE ta clé gratuite.",
   f:'app/engine/setlist_fm.py · ui/settings/_general.py', ok:'Corpus continue de croître sans 1001TL',
   gate:'Clé API gratuite à créer (setlist.fm/settings/api)'},
