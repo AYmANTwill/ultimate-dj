@@ -115,6 +115,7 @@ git tag vX.Y && git push origin vX.Y
 
 | Date | Changement |
 |------|-----------|
+| 2026-07-16 | Dépendance ajoutée : `pyrekordbox` (pont Rekordbox — historique de sets → corpus L2, mode Live à venir). Requirements + deps.py + spec (`collect_submodules("pyrekordbox")` + `sqlcipher3` en hiddenimports — imports lazy invisibles à l'analyse statique). ⚠ Au prochain build : re-dérouler §4 ET vérifier que le bridge se dégrade proprement sur une machine SANS Rekordbox. |
 | 2026-07-15 | G4 (CLAP) → ✅ : AUC per-track 0.712 vs 0.546. GO désormais bloqué UNIQUEMENT par les actions user : clé setlist.fm (G6), 50 votes L5 (G7), décision signing (G8). NB : garder ≥ 5 Go libres sur D: (le disque plein a cassé le premier rebuild). |
 | 2026-07-15 | G5 (B2 silent-swallows) → ✅. GO désormais bloqué par : CLAP (G4), clé setlist.fm (G6), votes L5 (G7). |
 | 2026-07-15 | Création. B5+B6 verts (build 928 Mo vérifié, bin/ bundlé, WebView2 frozen-safe, icône). GO bloqué par : CLAP (G4), B2 (G5), clé setlist.fm (G6), votes L5 (G7). |

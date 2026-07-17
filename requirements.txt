@@ -29,6 +29,10 @@ lxml>=4.9
 # Browser embedding (Windows: WebView2 runtime)
 pywebview>=6.0
 
+# Rekordbox bridge — lit master.db (historique de sets) + ANLZ (cues)
+# en LECTURE SEULE ; alimente le corpus L2 et le mode Live
+pyrekordbox>=0.4
+
 # Secrets / OS integration
 keyring>=24.0
 

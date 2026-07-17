@@ -371,6 +371,13 @@ shows the contribution from each.
   brings ≥ 25 new tracks, `enrich_corpus()` fires in the background
   (activity-tray progress, single-flight guard, baseline set on first
   enable so toggling it on never launches a surprise scrape).
+- **Rekordbox history → first-party training signal** — the local
+  Rekordbox 7 `master.db` is read (READ-ONLY, via pyrekordbox) and
+  every real played session becomes a cooccurrence set: 33 sets /
+  684 plays imported (72 % exact-path matches), pairs 7 468 → 10 362
+  (+39 %), model retrained on the owner's own transitions. Groundwork
+  for the upcoming **Live mode** (now-playing detection + real-time
+  next-track suggestions while playing on Rekordbox).
 
 ### Next up
 - Reach 50 L5 votes in the Mixer (2/50) so the feedback layer becomes

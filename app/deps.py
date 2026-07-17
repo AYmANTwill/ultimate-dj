@@ -39,6 +39,7 @@ REQUIREMENTS = [
     ("bs4",            "beautifulsoup4>=4.12",   "BeautifulSoup (HTML parsing)"),
     ("lxml",           "lxml>=4.9",              "lxml (XML/HTML fast parser)"),
     ("keyring",        "keyring>=24.0",          "keyring (Windows Credential Manager)"),
+    ("pyrekordbox",    "pyrekordbox>=0.4",       "pyrekordbox (pont Rekordbox : sets + Live)"),
 ]
 
 EXTERNAL_TOOLS = [

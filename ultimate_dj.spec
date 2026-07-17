@@ -46,6 +46,10 @@ hiddenimports += collect_submodules("cloudscraper")
 # whole `app` tree guarantees no page (or its new sub-package, e.g.
 # app.ui.settings.*) is ever missing.
 hiddenimports += collect_submodules("app")
+# Rekordbox bridge: pyrekordbox + its SQLCipher binding are imported
+# lazily (inside functions) — invisible to static analysis.
+hiddenimports += collect_submodules("pyrekordbox")
+hiddenimports += ["sqlcipher3"]
 
 # We deliberately DO NOT bundle the heavy AI/ML deps (torch,
 # transformers, panns) even if they happen to be installed in the build

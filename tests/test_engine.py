@@ -536,6 +536,15 @@ def test_write_m3u_emoji_name_gets_safe_filename(tmp_path):
     assert p2 is not None and p2.name == "Mix.m3u8"
 
 
+def test_rekordbox_bridge_clean_title():
+    from app.engine.rekordbox_bridge import _clean_title
+    assert _clean_title("Noir _ Haze_Solomun.mp3") == "Noir _ Haze_Solomun"
+    assert _clean_title("Track.FLAC") == "Track"
+    assert _clean_title("Deep Cut.aiff ") == "Deep Cut"
+    assert _clean_title("No Extension") == "No Extension"
+    assert _clean_title("") == ""
+
+
 def test_maybe_auto_enrich_gates(monkeypatch):
     import app.config as config_mod
     import app.engine.library as lib
