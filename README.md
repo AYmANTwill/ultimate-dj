@@ -360,11 +360,19 @@ shows the contribution from each.
   rotated cert while every older cert still passed), and emoji-only
   playlist names get a safe `.m3u8` filename.
 
+### Done in v1.5 → v1.6
+- **CLAP migration validated** — every embedding re-encoded with
+  `laion/clap-htsat-unfused` (1 104 user + 604 corpus tracks), pairs
+  rebuilt (7 468), model retrained, similarity recalibrated. Held-out
+  **per-track AUC 0.546 → 0.712** (1 474 pos / 7 370 neg): the model
+  finally generalises to tracks it has never seen instead of
+  memorising identities.
+- **Continuous learning** — opt-in auto-enrich: when a library sync
+  brings ≥ 25 new tracks, `enrich_corpus()` fires in the background
+  (activity-tray progress, single-flight guard, baseline set on first
+  enable so toggling it on never launches a surprise scrape).
+
 ### Next up
-- Finish the CLAP embedding migration (re-encode → rebuild → retrain),
-  then re-run the per-track evaluation (lite baseline: AUC 0.546 on
-  unseen tracks — the model memorises identities, CLAP is the
-  generalisation lever)
 - Reach 50 L5 votes in the Mixer (2/50) so the feedback layer becomes
   measurable
 - setlist.fm fallback activation — paste the free API key (the
