@@ -342,6 +342,81 @@ def analyze_into_db(paths: list[str], *, source: str = "training",
 
 # ── End-to-end ───────────────────────────────────────────────────
 
+_AUTO_ENRICH_LOCK = threading.Lock()
+_auto_enrich_in_progress = False
+
+
+def maybe_auto_enrich() -> bool:
+    """Continuous learning: fire enrich_corpus() in a daemon thread when
+    the user library grew by ai_auto_enrich_min_new tracks (default 25)
+    since the last run. Opt-in via ai_auto_enrich, off by default —
+    background scraping + downloads are not for everyone.
+
+    The first call after enabling only sets the baseline: switching the
+    toggle on must not instantly launch a scrape of a library that was
+    already there. Mirrors transition_model.maybe_auto_retrain.
+
+    Returns True if a run was actually scheduled.
+    """
+    global _auto_enrich_in_progress
+    if _auto_enrich_in_progress:
+        return False
+    try:
+        from app.config import load_config, save_config
+        cfg = load_config()
+        if not cfg.get("ai_auto_enrich", False):
+            return False
+        from app.engine import library
+        conn = library.get_connection()
+        n_user = conn.execute(
+            "SELECT COUNT(*) FROM tracks "
+            "WHERE COALESCE(source, 'user') = 'user'").fetchone()[0]
+        last = int(cfg.get("ai_auto_enrich_last_count", 0) or 0)
+        min_new = int(cfg.get("ai_auto_enrich_min_new", 25) or 25)
+        if last == 0 or n_user - last < min_new:
+            if last == 0:
+                cfg["ai_auto_enrich_last_count"] = n_user
+                save_config(cfg)
+            return False
+        cfg["ai_auto_enrich_last_count"] = n_user
+        save_config(cfg)
+    except Exception as e:
+        log_warning(f"maybe_auto_enrich: pre-checks failed: {e}")
+        return False
+
+    with _AUTO_ENRICH_LOCK:
+        if _auto_enrich_in_progress:
+            return False
+        _auto_enrich_in_progress = True
+
+    def _work():
+        global _auto_enrich_in_progress
+        try:
+            from app.engine import tasks as _tasks
+            task = _tasks.register(
+                "Corpus auto-enrich",
+                message="bibliothèque enrichie — scrape des setlists…")
+
+            def _ep(phase, i, total, msg):
+                _tasks.update(task.id,
+                              progress=(i / total) if total else 0.0,
+                              message=f"{phase}: {msg}")
+
+            summary = enrich_corpus(on_progress=_ep)
+            _tasks.complete(
+                task.id, success=not summary.get("aborted"),
+                message=f"{summary.get('total_pairs_after', 0)} paires "
+                        f"après enrichissement")
+        except Exception as e:
+            log_warning(f"maybe_auto_enrich: run failed: {e}")
+        finally:
+            _auto_enrich_in_progress = False
+
+    threading.Thread(target=_work, daemon=True,
+                     name="auto-enrich").start()
+    return True
+
+
 def enrich_corpus(target_pairs: int = 2000,
                    *, on_progress: Callable | None = None,
                    stop_event: threading.Event | None = None,

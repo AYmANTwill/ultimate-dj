@@ -536,6 +536,51 @@ def test_write_m3u_emoji_name_gets_safe_filename(tmp_path):
     assert p2 is not None and p2.name == "Mix.m3u8"
 
 
+def test_maybe_auto_enrich_gates(monkeypatch):
+    import app.config as config_mod
+    import app.engine.library as lib
+    from app.engine import training_pipeline as tp
+
+    store = {}
+    monkeypatch.setattr(config_mod, "load_config", lambda: dict(store))
+    monkeypatch.setattr(
+        config_mod, "save_config",
+        lambda cfg: (store.clear(), store.update(cfg)))
+
+    class _FakeCur:
+        def __init__(self, n):
+            self._n = n
+
+        def fetchone(self):
+            return (self._n,)
+
+    class _FakeConn:
+        def __init__(self, n):
+            self._n = n
+
+        def execute(self, *_):
+            return _FakeCur(self._n)
+
+    monkeypatch.setattr(lib, "get_connection", lambda: _FakeConn(100))
+    monkeypatch.setattr(tp, "enrich_corpus",
+                        lambda **kw: {"total_pairs_after": 0})
+
+    # Toggle off -> never fires
+    assert tp.maybe_auto_enrich() is False
+    # First enabled call -> sets the baseline, does NOT fire
+    store.update({"ai_auto_enrich": True})
+    assert tp.maybe_auto_enrich() is False
+    assert store["ai_auto_enrich_last_count"] == 100
+    # Below threshold -> no fire, marker untouched
+    monkeypatch.setattr(lib, "get_connection", lambda: _FakeConn(110))
+    assert tp.maybe_auto_enrich() is False
+    assert store["ai_auto_enrich_last_count"] == 100
+    # Threshold reached -> schedules and advances the marker
+    monkeypatch.setattr(lib, "get_connection", lambda: _FakeConn(125))
+    assert tp.maybe_auto_enrich() is True
+    assert store["ai_auto_enrich_last_count"] == 125
+
+
 def test_estimate_true_kbps_mapping():
     from app.engine.analyzer import estimate_true_kbps
     assert estimate_true_kbps(0) == 0

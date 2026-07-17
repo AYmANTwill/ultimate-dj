@@ -218,6 +218,20 @@ class AISectionsMixin:
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
             command=self._toggle_auto_retrain,
+        ).pack(anchor="w", padx=12, pady=(0, 4))
+        self._auto_enrich_var = ctk.BooleanVar(
+            value=bool(_cfg.get("ai_auto_enrich", False)))
+        ctk.CTkCheckBox(
+            model_card,
+            text=("Apprentissage continu : enrichir le corpus (scrape + "
+                  "download arrière-plan) quand ≥ 25 nouveaux morceaux "
+                  "arrivent au Sync"),
+            variable=self._auto_enrich_var,
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_dim"],
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            command=self._toggle_auto_enrich,
         ).pack(anchor="w", padx=12, pady=(0, 10))
 
         # ── AI · Pipeline d'entraînement ──────────────────────
@@ -490,6 +504,19 @@ class AISectionsMixin:
         except Exception as e:
             from app.logger import log_error
             log_error("toggle auto-retrain failed", e)
+
+    def _toggle_auto_enrich(self):
+        """Persist the continuous-learning toggle. maybe_auto_enrich
+        re-reads config at every Sync, and its first enabled run only
+        sets the baseline count — no instant scrape on toggle."""
+        try:
+            from app.config import load_config, save_config
+            cfg = load_config()
+            cfg["ai_auto_enrich"] = bool(self._auto_enrich_var.get())
+            save_config(cfg)
+        except Exception as e:
+            from app.logger import log_error
+            log_error("toggle auto-enrich failed", e)
 
 
     def _reset_model(self):

@@ -792,6 +792,11 @@ class LibraryPage(ctk.CTkFrame):
             self.after(0, lambda: self.sync_status.configure(
                 text=msg, text_color=COLORS["success"] if errs == 0
                 else COLORS["warning"]))
+            # Continuous learning — opt-in, cheap checks inside; shows
+            # up in the activity tray if it actually fires.
+            if done > 0:
+                from app.engine.training_pipeline import maybe_auto_enrich
+                maybe_auto_enrich()
         except Exception as e:
             log_error("sync_library crashed", e)
             self.after(0, lambda: self.sync_status.configure(
