@@ -24,7 +24,7 @@ Le lancement s'exécute quand TOUTES les cases sont cochées. Statut au
 | G4 | Migration CLAP terminée + éval per-track ≥ baseline | ✅ 2026-07-15 — AUC per-track **0.712** vs 0.546 lite (1 474 pos/7 370 neg) ; 7 468 paires, retrain fait, calibration CLAP vérifiée |
 | G5 | B2 audit silent-swallows terminé | ✅ clos 2026-07-15 — 13 log_warning data-paths, reste classé légitime, politique « nouveau swallow data = log » |
 | G6 | C2 setlist.fm actif (clé collée + bouton 🧪 vert) | ✅ 2026-07-16 — clé fournie par l'user, enregistrée en config, test API réel OK (setlist Solomun en cache) |
-| G7 | 50 votes L5 → feedback mesurable au breakdown | 🟡 2/50 (action user, pas du code) |
+| G7 | 50 votes L5 → feedback mesurable au breakdown | ✅ 2026-07-16 — **67 votes** : les 2 sets réels exportés par l'user (6 + 16 juillet) validés en bloc (« les écarts de key sont volontaires »), 67/67 transitions résolues par chemin exact, retrain relancé avec les votes ×3 |
 | G8 | Décision signing : certificat code OU SmartScreen assumé dans LISEZ-MOI | 🟡 par défaut : assumé (documenté) |
 | G9 | Version marquée : `CHANGELOG.md` à jour + tag git `vX.Y` | ⬜ au GO |
 
