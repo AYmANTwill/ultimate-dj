@@ -6,6 +6,29 @@ uses [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.6.0] — 2026-07-17 · **First shareable release (GO)**
+
+The owner declared the app complete; the launch runbook
+(`docs/LAUNCH_PLAN.md`) was executed end-to-end. Highlights since 1.3
+(full details in the README "Done in" sections):
+
+- **WAV repair v2** — 363/363 corrupted files repaired, byte-identical
+  undo retained.
+- **CLAP embeddings everywhere** — per-track generalisation AUC
+  0.546 → 0.712; similarity axis percentile-calibrated.
+- **First-party training** — the owner's own Rekordbox history
+  (33 sets) feeds the co-occurrence layer (10 362 pairs) and 67
+  validated transitions feed the feedback layer; model retrained.
+- **Live mode v1** — real-time now-playing detection from Rekordbox
+  (read-only) + set-aware next-track suggestions.
+- **Zero-dependency Windows build** — 937 MB folder app with
+  ffmpeg/ffprobe/node bundled, frozen-safe embedded browser, icon;
+  unzip and double-click. SmartScreen warning assumed (unsigned),
+  documented in LISEZ-MOI.txt.
+- Hardening: disk-full resilience lessons, silent-swallow audit
+  closed, clock-skew self-diagnosis on SSL failures, 60 tests green
+  in CI.
+
 ## [Unreleased] — v1.3 (AI layer & integrity sprint)
 
 ### Added — AI level 1

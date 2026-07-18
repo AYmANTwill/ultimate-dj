@@ -25,8 +25,8 @@ Le lancement s'exécute quand TOUTES les cases sont cochées. Statut au
 | G5 | B2 audit silent-swallows terminé | ✅ clos 2026-07-15 — 13 log_warning data-paths, reste classé légitime, politique « nouveau swallow data = log » |
 | G6 | C2 setlist.fm actif (clé collée + bouton 🧪 vert) | ✅ 2026-07-16 — clé fournie par l'user, enregistrée en config, test API réel OK (setlist Solomun en cache) |
 | G7 | 50 votes L5 → feedback mesurable au breakdown | ✅ 2026-07-16 — **67 votes** : les 2 sets réels exportés par l'user (6 + 16 juillet) validés en bloc (« les écarts de key sont volontaires »), 67/67 transitions résolues par chemin exact, retrain relancé avec les votes ×3 |
-| G8 | Décision signing : certificat code OU SmartScreen assumé dans LISEZ-MOI | 🟡 par défaut : assumé (documenté) |
-| G9 | Version marquée : `CHANGELOG.md` à jour + tag git `vX.Y` | ⬜ au GO |
+| G8 | Décision signing : certificat code OU SmartScreen assumé dans LISEZ-MOI | ✅ 2026-07-17 — défaut appliqué au GO : SmartScreen assumé (documenté LISEZ-MOI §2) ; un certificat pourra signer une version ultérieure |
+| G9 | Version marquée : `CHANGELOG.md` à jour + tag git `vX.Y` | ✅ 2026-07-17 — section [1.6.0] gelée + tag `v1.6.0` poussé |
 
 **NO-GO automatique** si : un test rouge, l'exe ne survit pas 15 s, un
 fichier > 800 LOC introduit, ou une écriture audio hors `engine.repair`.
@@ -115,6 +115,7 @@ git tag vX.Y && git push origin vX.Y
 
 | Date | Changement |
 |------|-----------|
+| 2026-07-17 | 🚀 **GO DÉCLARÉ — plan exécuté §2→§7.** §2 : git propre, pytest 100 %, 22 Go libres. §3 : build du jour valide (aucun code changé depuis). §4 : re-vérifié + résidu du test de lancement purgé du dist (`_internal/data` créé par l'exe pendant le test §4 — DB vide 4 Ko, zéro donnée perso ; le build lui-même était propre). G8 : défaut SmartScreen assumé. G9 : CHANGELOG [1.6.0] gelé + tag `v1.6.0`. §6 : `dist/UltimateDJ-v1.6.zip` créé. **Seule étape restante avant distribution large : §5 (test d'acceptation sur machine vierge — le premier ami cobaye).** |
 | 2026-07-16 | **Build redéroulé (§3-§4) après la journée Live** : 937 Mo / 3 841 fichiers (+pyrekordbox/sqlcipher3, page Live, corpus 10 362 paires, modèle réentraîné 67 votes). Vérifs §4 : bin/ complet smoke-testé, LISEZ-MOI « DEJA INCLUS », **exe vivant 15 s** (73 Mo RAM, GUI up). Reste avant envoi : test d'acceptation §5 sur machine sans Python/Rekordbox (dégradation propre du bridge à confirmer) + décision G8. |
 | 2026-07-16 | Dépendance ajoutée : `pyrekordbox` (pont Rekordbox — historique de sets → corpus L2, mode Live à venir). Requirements + deps.py + spec (`collect_submodules("pyrekordbox")` + `sqlcipher3` en hiddenimports — imports lazy invisibles à l'analyse statique). ⚠ Au prochain build : re-dérouler §4 ET vérifier que le bridge se dégrade proprement sur une machine SANS Rekordbox. |
 | 2026-07-15 | G4 (CLAP) → ✅ : AUC per-track 0.712 vs 0.546. GO désormais bloqué UNIQUEMENT par les actions user : clé setlist.fm (G6), 50 votes L5 (G7), décision signing (G8). NB : garder ≥ 5 Go libres sur D: (le disque plein a cassé le premier rebuild). |
