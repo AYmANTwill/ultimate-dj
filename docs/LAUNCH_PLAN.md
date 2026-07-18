@@ -115,6 +115,7 @@ git tag vX.Y && git push origin vX.Y
 
 | Date | Changement |
 |------|-----------|
+| 2026-07-16 | **Build redéroulé (§3-§4) après la journée Live** : 937 Mo / 3 841 fichiers (+pyrekordbox/sqlcipher3, page Live, corpus 10 362 paires, modèle réentraîné 67 votes). Vérifs §4 : bin/ complet smoke-testé, LISEZ-MOI « DEJA INCLUS », **exe vivant 15 s** (73 Mo RAM, GUI up). Reste avant envoi : test d'acceptation §5 sur machine sans Python/Rekordbox (dégradation propre du bridge à confirmer) + décision G8. |
 | 2026-07-16 | Dépendance ajoutée : `pyrekordbox` (pont Rekordbox — historique de sets → corpus L2, mode Live à venir). Requirements + deps.py + spec (`collect_submodules("pyrekordbox")` + `sqlcipher3` en hiddenimports — imports lazy invisibles à l'analyse statique). ⚠ Au prochain build : re-dérouler §4 ET vérifier que le bridge se dégrade proprement sur une machine SANS Rekordbox. |
 | 2026-07-15 | G4 (CLAP) → ✅ : AUC per-track 0.712 vs 0.546. GO désormais bloqué UNIQUEMENT par les actions user : clé setlist.fm (G6), 50 votes L5 (G7), décision signing (G8). NB : garder ≥ 5 Go libres sur D: (le disque plein a cassé le premier rebuild). |
 | 2026-07-15 | G5 (B2 silent-swallows) → ✅. GO désormais bloqué par : CLAP (G4), clé setlist.fm (G6), votes L5 (G7). |
