@@ -371,6 +371,12 @@ shows the contribution from each.
   brings ≥ 25 new tracks, `enrich_corpus()` fires in the background
   (activity-tray progress, single-flight guard, baseline set on first
   enable so toggling it on never launches a surprise scrape).
+- **Live mode v1** — a new Live page detects what Rekordbox is
+  playing (read-only polling of today's history session, ~1 min
+  latency) and shows a live top-10 of what to play next, ranked by
+  the full transition score with the co-occurrence signal from the
+  owner's own sets; already-played tracks are excluded and the set
+  timeline builds up in real time.
 - **Rekordbox history → first-party training signal** — the local
   Rekordbox 7 `master.db` is read (READ-ONLY, via pyrekordbox) and
   every real played session becomes a cooccurrence set: 33 sets /

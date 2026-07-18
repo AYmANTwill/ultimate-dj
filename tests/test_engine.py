@@ -536,6 +536,26 @@ def test_write_m3u_emoji_name_gets_safe_filename(tmp_path):
     assert p2 is not None and p2.name == "Mix.m3u8"
 
 
+def test_live_suggest_ranks_and_excludes_played():
+    from app.engine.live import LiveSession
+
+    def mk(p, bpm, cam):
+        return {"path": p, "title": p, "bpm": bpm, "camelot": cam,
+                "energy": 5, "duration": 300, "genre": "", "rating": 0}
+
+    ls = LiveSession()
+    cur = mk("cur.mp3", 120, "8A")
+    lib = {"a": mk("a.mp3", 121, "8A"),
+           "b": mk("b.mp3", 150, "3B"),
+           "c": mk("c.mp3", 120, "8A")}
+    played = [{"row": lib["c"]}]
+    out = ls._suggest(cur, played, lib, limit=5)
+    paths = [s["path"] for s in out]
+    assert "c.mp3" not in paths
+    assert paths[0] == "a.mp3"
+    assert out[0]["score"] >= out[-1]["score"]
+
+
 def test_rekordbox_bridge_clean_title():
     from app.engine.rekordbox_bridge import _clean_title
     assert _clean_title("Noir _ Haze_Solomun.mp3") == "Noir _ Haze_Solomun"
