@@ -60,6 +60,30 @@ def _wav_structured(path: Path, *, sr: int = 8000):
         f.write(samples.tobytes())
 
 
+def _wav_sparse_intro(path: Path, *, sr: int = 22050):
+    """60s where intro/outro are LOUD but spectrally SPARSE (a 100 Hz
+    kick-ish tone, no highs) and the body is broadband. This is the
+    loudness-war trap v1 fails: RMS alone calls the sparse intro
+    'body'; only the HF-ratio (v2) sees it as an intro."""
+    def low(n):
+        t = np.arange(n) / sr
+        return (0.4 * np.sin(2 * np.pi * 100 * t)).astype(np.float32)
+
+    def broadband(n):
+        return (0.4 * np.random.randn(n)).astype(np.float32)
+
+    audio = np.concatenate([low(12 * sr), broadband(36 * sr),
+                            low(12 * sr)])
+    samples = (np.clip(audio, -1, 1) * 32767).astype(np.int16)
+    with open(path, "wb") as f:
+        f.write(b"RIFF" + struct.pack("<I", 36 + len(samples) * 2)
+                + b"WAVE")
+        f.write(b"fmt " + struct.pack("<I", 16))
+        f.write(struct.pack("<HHIIHH", 1, 1, sr, sr * 2, 2, 16))
+        f.write(b"data" + struct.pack("<I", len(samples) * 2))
+        f.write(samples.tobytes())
+
+
 def _in_mem_db():
     from app.engine import library
     conn = sqlite3.connect(":memory:")
@@ -131,6 +155,19 @@ def test_segmentation_short_track_is_safe(tmp_path):
     r = detect_structure(str(p))
     assert r["intro_end"] == 0.0
     assert r["outro_start"] > 0  # = duration
+
+
+def test_segmentation_v2_sees_spectrally_sparse_intro(tmp_path):
+    """The v2 win: a LOUD but bass-only intro/outro must be detected
+    as intro/outro, not swallowed into the body. This is exactly the
+    loudness-war case v1 (RMS-only) missed on ~40% of the library."""
+    from app.engine.segmentation import detect_structure
+    p = tmp_path / "sparse.wav"
+    _wav_sparse_intro(p)
+    r = detect_structure(str(p))
+    # intro ends around 12s, outro starts around 48s (±5s smoothing)
+    assert 7.0 < r["intro_end"] < 17.0, r["intro_end"]
+    assert 43.0 < r["outro_start"] < 53.0, r["outro_start"]
 
 
 # ── transition score breakdown ───────────────────────────────────

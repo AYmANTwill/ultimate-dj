@@ -386,13 +386,15 @@ shows the contribution from each.
   next-track suggestions while playing on Rekordbox).
 
 ### Next up
-- Reach 50 L5 votes in the Mixer (2/50) so the feedback layer becomes
-  measurable
-- setlist.fm fallback activation — paste the free API key (the
-  test/fetch button now ships in Settings; engine + tests done)
-- Code signing (SmartScreen) on the shareable build
-- Continuous-learning auto-trigger — fire `enrich_corpus()` when ≥ N
-  new tracks land in the library
+- **L3 v2 backfill** — spectral segmentation engine landed (RMS +
+  high-frequency ratio; A/B vs v1: missed intros 50→27 %, missed
+  outros 47→37 %, zero-drop 70→10 %). Pending an owner spot-check on a
+  few known tracks to tune thresholds before re-analysing the library
+  (DB columns only, never the audio).
+- Live mode v1.1 — one-tap votes + auto-capture on set end + the
+  L4/L5 delta in the live ranking; then LV2 (audio listening → exact
+  parts used).
+- Code signing (SmartScreen) on the shareable build — owner decision.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
 
