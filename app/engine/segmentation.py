@@ -56,8 +56,8 @@ _HOP = _SR // 2          # 0.5 s hop → 2 fps
 _SMOOTH_HOPS = 10        # 5 s moving average
 _BODY_LO_FRAC = 0.25     # body reference = middle 50 %
 _BODY_HI_FRAC = 0.75
-_RMS_FLOOR = 0.40        # window is loud enough at 40 % of body rms…
-_HF_FLOOR = 0.60         # …and full enough at 60 % of body hf-ratio
+_RANGE_LOW_PCT = 10      # "sparsest state" reference = 10th pct
+_RANGE_RISE = 0.35       # full once 35 % up the track's own 0..1 range
 _HF_SPLIT_HZ = 4000.0    # hats/leads/vocals live above this
 _PERSIST_HOPS = 16       # fullness must hold 8 s to count
 _PERSIST_RELAX = 8       # …relaxed to 4 s if nothing qualifies
@@ -104,11 +104,14 @@ def detect_structure(path: str) -> dict:
     if rms_med <= 0:
         return out
 
-    full = rms_s >= (rms_med * _RMS_FLOOR)
-    if hf_med > 1e-4:
-        full &= hfr_s >= (hf_med * _HF_FLOOR)
-    # else: no HF content anywhere (ambient / dark rip) → RMS-only,
-    # which is exactly the v1 behaviour.
+    # "Fullness" curve thresholded against the track's OWN dynamic
+    # range, not against its densest section. That is the DJ
+    # definition: the intro ends at the FIRST sustained lift off the
+    # sparsest level, not when the track reaches peak density. On a
+    # track that keeps building (Anyma - Sentient: real intro 15s, a
+    # SECOND intro/breakdown at 90s) a median-relative threshold only
+    # accepted the post-90s section and wrongly reported 90s.
+    full = _fullness_mask(rms_s, hfr_s, rms_med, hf_med)
 
     intro_idx = _first_persistent(full[: int(n * 0.60)])
     outro_idx = _last_persistent(full, start=max(intro_idx,
@@ -141,6 +144,62 @@ def _envelopes(y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         total = float(spec.sum())
         hfr[i] = float(spec[hf_mask].sum() / total) if total > 0 else 0.0
     return rms, hfr
+
+
+def _norm01(x: np.ndarray) -> np.ndarray:
+    """Map a curve onto 0..1 using its OWN 10th-90th percentile span,
+    so each signal is judged against the range it actually shows on
+    this track. A perfectly flat curve carries no information and
+    collapses to zeros."""
+    lo = float(np.percentile(x, _RANGE_LOW_PCT))
+    hi = float(np.percentile(x, 100 - _RANGE_LOW_PCT))
+    if hi - lo <= 1e-9:
+        return np.zeros_like(x)
+    return np.clip((x - lo) / (hi - lo), 0.0, 1.0)
+
+
+def _contrast(x: np.ndarray) -> float:
+    """How much this curve actually varies, 0..1 — the share of its
+    high level that the low-to-high span covers."""
+    lo = float(np.percentile(x, _RANGE_LOW_PCT))
+    hi = float(np.percentile(x, 100 - _RANGE_LOW_PCT))
+    return 0.0 if hi <= 1e-9 else max(0.0, (hi - lo) / hi)
+
+
+def _fullness(rms_s: np.ndarray, hfr_s: np.ndarray,
+              rms_ref: float = 0.0, hf_ref: float = 0.0) -> np.ndarray:
+    """'The track has started' curve, 0..1.
+
+    Two independent tells, and either one is enough:
+      * loudness rising  — the quiet-intro case (Anyma - Sentient: an
+        atmospheric intro then the kick at 15s; the spectrum alone
+        stays sparse until 30s and would report the intro far too
+        late);
+      * spectral richness rising — the loudness-war case, where the
+        kick hits from bar 1 at full level and only hats/leads/vocals
+        entering mark the real start.
+    The high end is measured as ABSOLUTE energy (rms x hf-ratio), not
+    as the ratio: the ratio is scale-free, so near-silence full of
+    hiss reads as 100 % highs and faked a 1.5s intro on a track whose
+    real intro is ~20s. Actual hats carry actual energy.
+
+    Each signal is normalised on its own dynamic range, then blended
+    by how much CONTRAST it shows on this track: a flat signal says
+    nothing and is weighted out, so the informative one decides."""
+    hf_energy = rms_s * hfr_s
+    r_c = _contrast(rms_s)
+    h_c = _contrast(hf_energy)
+    if r_c + h_c <= 1e-9:
+        return np.zeros_like(rms_s)
+    w_r = r_c / (r_c + h_c)
+    return w_r * _norm01(rms_s) + (1.0 - w_r) * _norm01(hf_energy)
+
+
+def _fullness_mask(rms_s: np.ndarray, hfr_s: np.ndarray,
+                   rms_ref: float = 0.0, hf_ref: float = 0.0
+                   ) -> np.ndarray:
+    """Windows where the arrangement is up and running."""
+    return _fullness(rms_s, hfr_s) >= _RANGE_RISE
 
 
 def _smooth(x: np.ndarray) -> np.ndarray:
@@ -193,12 +252,7 @@ def _find_drops(rms_s: np.ndarray, hfr_s: np.ndarray,
     jump size, min 8 s apart, max 4."""
     if body_hi - body_lo < _DROP_TROUGH_HOPS + 4 or rms_med <= 0:
         return []
-    # Combined "fullness" energy: rms weighted by spectral richness
-    # (when there's no HF signal at all, plain rms).
-    if hf_med > 1e-4:
-        comb = (rms_s / rms_med) * np.clip(hfr_s / hf_med, 0.0, 2.0)
-    else:
-        comb = rms_s / rms_med
+    comb = _fullness(rms_s, hfr_s, rms_med, hf_med)
     candidates: list[tuple[float, int]] = []
     for i in range(body_lo + _DROP_TROUGH_HOPS, body_hi - 2):
         trough = comb[i - _DROP_TROUGH_HOPS: i]
