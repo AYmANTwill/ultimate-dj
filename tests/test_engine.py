@@ -593,6 +593,30 @@ def test_live_suggest_ranks_and_excludes_played():
     assert out[0]["score"] >= out[-1]["score"]
 
 
+def test_updater_version_compare_and_frozen_guard(tmp_path):
+    from app.engine import updater
+    assert updater.is_newer("1.6.1", "1.6.0")
+    assert updater.is_newer("1.7.0", "1.6.9")
+    assert updater.is_newer("v2.0.0", "1.9.9")
+    assert not updater.is_newer("1.6.0", "1.6.0")
+    assert not updater.is_newer("1.5.0", "1.6.0")
+    # apply_update is a no-op (returns False) outside a frozen build —
+    # never touches files in dev / CI.
+    dummy = tmp_path / "x.zip"
+    dummy.write_bytes(b"PK\x03\x04")
+    assert updater.apply_update(dummy) is False
+
+
+def test_edition_defaults_to_full():
+    import importlib
+    import app.edition as ed
+    importlib.reload(ed)
+    # In the test process ULTIMATEDJ_LITE isn't set → full edition.
+    assert ed.IS_LITE is False
+    assert ed.APP_NAME == "Ultimate DJ"
+    assert "Download" in ed.LITE_PAGES and "Library" in ed.LITE_PAGES
+
+
 def test_deezer_url_parsing_and_track_shape():
     from app.engine import deezer
     assert deezer.url_id("https://www.deezer.com/en/track/3135556") \

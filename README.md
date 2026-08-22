@@ -385,6 +385,15 @@ shows the contribution from each.
   for the upcoming **Live mode** (now-playing detection + real-time
   next-track suggestions while playing on Rekordbox).
 
+### Editions
+- **Full** — everything below.
+- **Lite** — a trimmed build for a non-technical friend: only the
+  Library + Download pages (plus a small Settings), Deezer added as a
+  source, and a consented GitHub-Releases auto-updater so the owner
+  can ship fixes with one click on the friend's side. Same codebase,
+  selected by a build flag (`ultimate_dj_lite.spec` /
+  `build_share_lite.py`).
+
 ### Next up
 - **L3 v2 backfill** — spectral segmentation engine landed (RMS +
   high-frequency ratio; A/B vs v1: missed intros 50→27 %, missed

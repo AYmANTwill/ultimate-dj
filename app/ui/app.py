@@ -46,6 +46,22 @@ SIDEBAR_GROUPS_LAZY: list[tuple[str, list[tuple[str, str, str]]]] = [
     ]),
 ]
 
+# Lite edition: a trimmed sidebar for a non-technical user — only
+# Library + Download, and a small dedicated Settings page. Same
+# codebase, selected by app.edition.IS_LITE (set by the lite build).
+from app.edition import IS_LITE, LITE_PAGES  # noqa: E402
+if IS_LITE:
+    _LITE_SETTINGS = ("Settings", "app.ui.settings_lite", "SettingsLitePage")
+    SIDEBAR_GROUPS_LAZY = [
+        (section, [
+            (_LITE_SETTINGS if label == "Settings" else (label, mod, name))
+            for (label, mod, name) in items if label in LITE_PAGES
+        ])
+        for section, items in SIDEBAR_GROUPS_LAZY
+    ]
+    SIDEBAR_GROUPS_LAZY = [(s, items) for s, items in SIDEBAR_GROUPS_LAZY
+                           if items]
+
 
 # Backwards-compatible shape for any code that walked SIDEBAR_GROUPS
 # expecting the actual class. Resolves Home eagerly, the rest stay
@@ -105,7 +121,8 @@ class App(ctk.CTk):
             purge_old_trash(get_connection())
         except Exception:
             pass
-        self.title("Ultimate DJ")
+        from app.edition import APP_NAME
+        self.title(APP_NAME)
         self.geometry(f"{self.WIDTH}x{self.HEIGHT}")
         self.minsize(960, 600)
         self.configure(fg_color=COLORS["bg_dark"])
@@ -121,8 +138,12 @@ class App(ctk.CTk):
             self, fg_color=COLORS["bg_dark"], corner_radius=0)
         self.content.pack(side="right", fill="both", expand=True)
 
-        # Default landing: Home (overview + quick actions)
-        self._switch_page("Home")
+        # Default landing: Home (overview + quick actions) — or the
+        # first available page in the Lite build, which has no Home.
+        landing = "Home" if "Home" in self._pages else next(
+            iter(self._pages), None)
+        if landing:
+            self._switch_page(landing)
 
         # Floating activity tray — appears top-left when any background
         # task registers itself, auto-hides when none are active. Single
