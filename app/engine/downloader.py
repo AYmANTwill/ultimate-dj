@@ -239,6 +239,21 @@ def download_url(
     return files
 
 
+def _friendly_error(msg: str) -> str:
+    """Turn yt-dlp's stale-signature failures into an actionable line
+    for a non-technical user. A 403 / 'unable to download video data'
+    / nsig error almost always means the bundled yt-dlp is out of date
+    because YouTube changed — the fix is a one-click app update."""
+    m = (msg or "").lower()
+    if ("403" in m or "forbidden" in m
+            or "unable to download video data" in m
+            or "nsig" in m or "sign" in m):
+        return (f"{msg}  —  YouTube a changé ses protections. "
+                "Ouvre Réglages › « Vérifier les mises à jour », "
+                "installe la mise à jour, puis réessaie.")
+    return msg
+
+
 def download_tracks_by_search(
     tracks: list[dict],
     output_folder: str,
@@ -371,9 +386,10 @@ def download_tracks_by_search(
         elif not (stop_event and stop_event.is_set()):
             fail += 1
             failed_tracks.append(track)
-            log_error(f"Failed to download: {display} — {last_err}")
+            friendly = _friendly_error(last_err)
+            log_error(f"Failed to download: {display} — {friendly}")
             if on_track:
-                on_track(i, len(tracks), display, "fail", last_err)
+                on_track(i, len(tracks), display, "fail", friendly)
 
     log_info(f"Spotify batch done: {ok} ok / {fail} failed")
     paths = _collect_files(out_dir, codec, fallback_codec)

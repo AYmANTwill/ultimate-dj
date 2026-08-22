@@ -16,7 +16,10 @@ mutagen>=1.47.0
 pyrubberband>=0.3.4         # optional (also needs rubberband.exe on PATH)
 
 # Downloads & 3rd-party APIs
-yt-dlp[default]>=2026.0.0
+yt-dlp[default]>=2026.8.19        # YouTube changes weekly — a stale
+                                   # yt-dlp 403s. Builds must bundle a
+                                   # recent one; the app also self-
+                                   # refreshes it at runtime (ytdlp_refresh).
 spotipy>=2.23.0
 cloudscraper>=1.2.71            # cheap path for static pages
 playwright>=1.50.0              # JS-rendered pages (1001tracklists);
