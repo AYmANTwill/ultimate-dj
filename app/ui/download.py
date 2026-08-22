@@ -13,7 +13,7 @@ import customtkinter as ctk
 from tkinter import filedialog, simpledialog
 
 from app.config import COLORS, load_config
-from app.engine import downloader, spotify
+from app.engine import deezer, downloader, spotify
 from app.logger import log_error, log_info
 from app.ui.fastlist import FastList
 from app.ui.helpers import UiThrottle, font
@@ -199,7 +199,7 @@ class DownloadPage(ctk.CTkFrame):
                      font=ctk.CTkFont(size=24, weight="bold"),
                      text_color=COLORS["text"]).pack(side="left")
         ctk.CTkLabel(hdr,
-                     text="  YouTube · SoundCloud · Spotify · 1001Tracklists",
+                     text="  YouTube · SoundCloud · Spotify · Deezer · 1001Tracklists",
                      font=ctk.CTkFont(size=12),
                      text_color=COLORS["text_dim"]).pack(side="left", padx=4)
         # The 3 service buttons that opened the system browser have been
@@ -218,7 +218,7 @@ class DownloadPage(ctk.CTkFrame):
                      font=ctk.CTkFont(size=11, weight="bold"),
                      text_color=COLORS["text_dim"]).pack(side="left")
         self.url_entry = ctk.CTkEntry(
-            url_row, placeholder_text="Colle un lien YouTube / SoundCloud / Spotify…",
+            url_row, placeholder_text="Colle un lien YouTube / SoundCloud / Spotify / Deezer…",
             height=36, font=ctk.CTkFont(size=12),
             fg_color=COLORS["bg_input"], border_color=COLORS["accent"],
             text_color=COLORS["text"])
@@ -596,10 +596,18 @@ class DownloadPage(ctk.CTkFrame):
         self.progress_bar.set(0)
         self._log_clear()
 
+        # Spotify and Deezer are playlist SOURCES: read their metadata,
+        # then download the matching audio by search (YouTube). Any
+        # other URL goes straight to yt-dlp.
+        resolver = None
         if "spotify.com" in url:
+            resolver = spotify
+        elif "deezer.com" in url:
+            resolver = deezer
+        if resolver is not None:
             threading.Thread(
-                target=self._download_spotify,
-                args=(url, out, quality, codec, fallback),
+                target=self._download_from_source,
+                args=(resolver, url, out, quality, codec, fallback),
                 daemon=True).start()
         else:
             self._log(f"→ {out}")
@@ -634,10 +642,16 @@ class DownloadPage(ctk.CTkFrame):
             self.after(0, lambda: self._set_status(f"Error: {e}", "error"))
             self.after(0, lambda: self._set_running(False))
 
-    def _download_spotify(self, url, out, quality, codec, fallback):
-        self.after(0, lambda: self._set_status("Fetching Spotify playlist…"))
+    def _download_from_source(self, resolver, url, out, quality, codec,
+                              fallback):
+        """Shared metadata→search flow for any playlist source
+        (Spotify or Deezer). ``resolver`` is the source module exposing
+        fetch_playlist / url_id / is_editorial."""
+        src = "Deezer" if resolver is deezer else "Spotify"
+        self.after(0, lambda: self._set_status(
+            f"Fetching {src} playlist…"))
 
-        if spotify.is_editorial(url):
+        if resolver.is_editorial(url):
             self.after(0, lambda: self._set_status(
                 "Editorial playlist — save to your library first", "warning"))
             self.after(0, lambda: self._log(
@@ -646,7 +660,7 @@ class DownloadPage(ctk.CTkFrame):
             self.after(0, lambda: self._set_running(False))
             return
 
-        name, source_tracks, err = spotify.fetch_playlist(url)
+        name, source_tracks, err = resolver.fetch_playlist(url)
         if not source_tracks:
             msg = err or "Could not fetch playlist"
             self.after(0, lambda: self._set_status(msg, "error"))
@@ -658,7 +672,7 @@ class DownloadPage(ctk.CTkFrame):
         # this folder, only fetch the tracks that have been ADDED. Ask
         # the user before deleting tracks that LEFT the source playlist.
         from app.engine import playlist_sync
-        playlist_id = spotify.url_id(url)
+        playlist_id = resolver.url_id(url)
         cache = playlist_sync.load_cache(playlist_id, out) if playlist_id else None
         # Folder downloaded before the sync system existed (no cache) —
         # recognise the files already there so only NEW songs download.

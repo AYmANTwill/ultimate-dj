@@ -593,6 +593,25 @@ def test_live_suggest_ranks_and_excludes_played():
     assert out[0]["score"] >= out[-1]["score"]
 
 
+def test_deezer_url_parsing_and_track_shape():
+    from app.engine import deezer
+    assert deezer.url_id("https://www.deezer.com/en/track/3135556") \
+        == "dz-track-3135556"
+    assert deezer.url_id("https://deezer.com/us/album/302127") \
+        == "dz-album-302127"
+    assert deezer.url_id("https://www.deezer.com/fr/playlist/908622995") \
+        == "dz-playlist-908622995"
+    assert deezer.url_id("https://example.com/nope") is None
+    assert deezer.is_editorial("https://deezer.com/playlist/1") is False
+    # Track dict matches the shared spotify_id/title/artist/duration
+    # contract, id namespaced with dz:.
+    item = deezer._track_item(
+        {"id": 42, "title": "T", "artist": {"name": "A"}, "duration": 200})
+    assert item == {"spotify_id": "dz:42", "title": "T",
+                    "artist": "A", "duration": 200}
+    assert deezer._track_item({"id": 1}) is None  # no title → dropped
+
+
 def test_rekordbox_bridge_clean_title():
     from app.engine.rekordbox_bridge import _clean_title
     assert _clean_title("Noir _ Haze_Solomun.mp3") == "Noir _ Haze_Solomun"
