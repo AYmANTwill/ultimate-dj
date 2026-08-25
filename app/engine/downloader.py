@@ -78,7 +78,25 @@ def _yt_base_opts() -> dict:
     # requires PO tokens — which made every download fail with
     # "Requested format is not available". yt-dlp's default client mix
     # is maintained upstream and picks a working client per video.
-    opts: dict = {}
+    opts: dict = {
+        # YouTube soft-throttles an IP that pulls a burst of videos: a
+        # 25-track batch got 2 ok / 23 "HTTP 403 Forbidden", and the very
+        # same tracks download fine once the throttle lifts. Space the
+        # requests out and retry hard so a batch stays under the radar
+        # instead of tripping the ban after ~2 downloads.
+        "sleep_interval_requests": 1,   # ≥1s between HTTP requests
+        "sleep_interval": 2,            # random 2–6s pause before each
+        "max_sleep_interval": 6,        # video download
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_retries": 3,
+        "file_access_retries": 5,
+        # Let yt-dlp's default client mix lead (upstream-maintained),
+        # with android as a fallback when default yields no playable
+        # format. This is NOT the old hard web-client pin that hit the
+        # PO-token wall — default stays first.
+        "extractor_args": {"youtube": {"player_client": ["default", "android"]}},
+    }
     node = get_node()
     if node:
         node_dir = os.path.dirname(node)
@@ -245,13 +263,45 @@ def _friendly_error(msg: str) -> str:
     / nsig error almost always means the bundled yt-dlp is out of date
     because YouTube changed — the fix is a one-click app update."""
     m = (msg or "").lower()
-    if ("403" in m or "forbidden" in m
-            or "unable to download video data" in m
-            or "nsig" in m or "sign" in m):
+    if "403" in m or "forbidden" in m or "unable to download video data" in m:
+        return (f"{msg}  —  YouTube limite temporairement les "
+                "téléchargements depuis ton IP (fréquent sur un gros lot). "
+                "Attends quelques minutes et relance ; si ça persiste, "
+                "Réglages › « Vérifier les mises à jour ».")
+    if "nsig" in m or "sign in to confirm" in m or "player" in m:
         return (f"{msg}  —  YouTube a changé ses protections. "
-                "Ouvre Réglages › « Vérifier les mises à jour », "
-                "installe la mise à jour, puis réessaie.")
+                "Réglages › « Vérifier les mises à jour », puis réessaie.")
     return msg
+
+
+# After this many consecutive throttle-403s, pause the batch. Cooldown
+# grows with each additional trip (60s, 120s, 180s… capped).
+_THROTTLE_TRIP = 3
+_COOLDOWN_BASE_S = 60
+_COOLDOWN_MAX_S = 300
+
+
+def _is_throttle(msg: str) -> bool:
+    m = (msg or "").lower()
+    return ("403" in m or "forbidden" in m
+            or "unable to download video data" in m)
+
+
+def _cooldown(trip_count: int, on_track, i: int, total: int,
+              stop_event) -> None:
+    """Interruptible pause after YouTube starts 403-ing a burst."""
+    secs = min(_COOLDOWN_MAX_S,
+               _COOLDOWN_BASE_S * (trip_count - _THROTTLE_TRIP + 1))
+    log_info(f"YouTube throttle detected ({trip_count} in a row) — "
+             f"pause {secs}s before continuing")
+    for remaining in range(secs, 0, -1):
+        if stop_event and stop_event.is_set():
+            return
+        if on_track and remaining % 5 == 0:
+            on_track(i, total, "—", "downloading",
+                     f"YouTube limite les téléchargements — reprise dans "
+                     f"{remaining}s…")
+        time.sleep(1)
 
 
 def download_tracks_by_search(
@@ -278,6 +328,7 @@ def download_tracks_by_search(
     base      = _yt_base_opts()
     ok, fail  = 0, 0
     failed_tracks: list[dict] = []
+    consecutive_throttle = 0   # back off when YouTube starts 403-ing
 
     # Continue numbering from whatever already exists in the folder
     num_offset = _max_existing_number(out_dir)
@@ -381,6 +432,7 @@ def download_tracks_by_search(
 
         if downloaded:
             ok += 1
+            consecutive_throttle = 0
             if on_track:
                 on_track(i, len(tracks), display, "ok", "")
         elif not (stop_event and stop_event.is_set()):
@@ -390,6 +442,17 @@ def download_tracks_by_search(
             log_error(f"Failed to download: {display} — {friendly}")
             if on_track:
                 on_track(i, len(tracks), display, "fail", friendly)
+            # Throttle back-off: several 403s in a row means YouTube has
+            # rate-limited this IP. Blasting through the rest just fails
+            # them all — pause to let the limit lift, then continue.
+            if _is_throttle(last_err):
+                consecutive_throttle += 1
+                if (consecutive_throttle >= _THROTTLE_TRIP
+                        and rel_i < len(tracks)):
+                    _cooldown(consecutive_throttle, on_track, i,
+                              len(tracks), stop_event)
+            else:
+                consecutive_throttle = 0
 
     log_info(f"Spotify batch done: {ok} ok / {fail} failed")
     paths = _collect_files(out_dir, codec, fallback_codec)
