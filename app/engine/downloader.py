@@ -91,11 +91,13 @@ def _yt_base_opts() -> dict:
         "fragment_retries": 10,
         "extractor_retries": 3,
         "file_access_retries": 5,
-        # Let yt-dlp's default client mix lead (upstream-maintained),
-        # with android as a fallback when default yields no playable
-        # format. This is NOT the old hard web-client pin that hit the
-        # PO-token wall — default stays first.
-        "extractor_args": {"youtube": {"player_client": ["default", "android"]}},
+        # Android client FIRST: it serves directly-downloadable audio
+        # formats that don't hit the web client's PO-token / SABR 403
+        # wall (which was 403-ing individual tracks intermittently even
+        # with a fresh yt-dlp). Verified most reliable in testing (6/6,
+        # and bigger files); default kept as a fallback. NOT the old
+        # broken web-client pin.
+        "extractor_args": {"youtube": {"player_client": ["android", "default"]}},
     }
     node = get_node()
     if node:
