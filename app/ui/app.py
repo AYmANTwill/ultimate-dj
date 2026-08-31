@@ -36,6 +36,7 @@ SIDEBAR_GROUPS_LAZY: list[tuple[str, list[tuple[str, str, str]]]] = [
     ("MIX", [
         ("Mixer",     "app.ui.mixer",    "MixerPage"),
         ("Live",      "app.ui.live",     "LivePage"),
+        ("Record",    "app.ui.recorder", "RecorderPage"),
         ("Setlist",   "app.ui.setlist",  "SetlistPage"),
     ]),
     ("DISCOVER", [
