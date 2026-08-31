@@ -41,6 +41,59 @@ from app.logger import log_info, log_warning
 _CONTROLLER_HINTS = ("ddj", "xdj", "flx", "pioneer", "rekordbox", "cdj",
                      "djm", "traktor", "rane", "denon")
 
+# DDJ-FLX4 wake-up: knobs/faders are SILENT until this SysEx is sent to
+# the controller's MIDI OUTPUT — it makes every analog control report
+# its position and doubles as a keep-alive (resend every few seconds).
+# Reverse-engineered by the Mixxx project. mido wraps F0…F7 itself, so
+# we pass the inner data bytes only.
+_FLX4_INIT_SYSEX = [0x00, 0x40, 0x05, 0x00, 0x00, 0x04, 0x05, 0x00,
+                    0x50, 0x02]
+_KEEPALIVE_S = 3.0
+
+# DDJ-FLX4 control map (from Mixxx Pioneer-DDJ-FLX4.midi.xml). Keyed by
+# (kind, channel, num) → human label. CC numbers are the 7-bit MSB; the
+# 14-bit LSB arrives on num+0x20 and is labelled "… (fin)".
+_FLX4_MAP: dict[tuple, str] = {}
+
+
+def _fill_flx4_map() -> None:
+    cc, note = "cc", "note_on"
+    # per-deck: ch0 = deck 1, ch1 = deck 2
+    for ch, d in ((0, 1), (1, 2)):
+        _FLX4_MAP[(cc, ch, 0x00)] = f"tempo D{d}"
+        _FLX4_MAP[(cc, ch, 0x04)] = f"trim D{d}"
+        _FLX4_MAP[(cc, ch, 0x07)] = f"EQ hi D{d}"
+        _FLX4_MAP[(cc, ch, 0x0B)] = f"EQ mid D{d}"
+        _FLX4_MAP[(cc, ch, 0x0F)] = f"EQ low D{d}"
+        _FLX4_MAP[(cc, ch, 0x13)] = f"volume D{d}"
+        _FLX4_MAP[(cc, ch, 0x22)] = f"jog D{d}"
+        _FLX4_MAP[(cc, ch, 0x23)] = f"jog D{d}"
+        _FLX4_MAP[(cc, ch, 0x21)] = f"jog-ring D{d}"
+        _FLX4_MAP[(note, ch, 0x0B)] = f"PLAY D{d}"
+        _FLX4_MAP[(note, ch, 0x0C)] = f"CUE D{d}"
+        _FLX4_MAP[(note, ch, 0x58)] = f"SYNC D{d}"
+        _FLX4_MAP[(note, ch, 0x36)] = f"jog-touch D{d}"
+    # mixer section (channel 6)
+    _FLX4_MAP[(cc, 6, 0x1F)] = "crossfader"
+    _FLX4_MAP[(cc, 6, 0x0C)] = "casque mix"
+    _FLX4_MAP[(cc, 6, 0x17)] = "filter D1"
+    _FLX4_MAP[(cc, 6, 0x18)] = "filter D2"
+
+
+_fill_flx4_map()
+
+
+def label(ev: dict) -> str:
+    """Human name for a captured event, using the FLX4 map. LSB bytes
+    (num = MSB+0x20) are folded onto their control with '(fin)'."""
+    k = (ev["kind"], ev["ch"], ev["num"])
+    if k in _FLX4_MAP:
+        return _FLX4_MAP[k]
+    msb = (ev["kind"], ev["ch"], ev["num"] - 0x20)
+    if ev["num"] >= 0x20 and msb in _FLX4_MAP:
+        return _FLX4_MAP[msb] + " (fin)"
+    return f"{ev['kind']}:ch{ev['ch']}:num{ev['num']}"
+
 
 def available() -> bool:
     """True when the MIDI backend is importable."""
@@ -64,13 +117,26 @@ def list_inputs() -> list[str]:
 
 
 def find_controller(names: list[str] | None = None) -> str | None:
-    """Pick the first port that looks like a DJ controller."""
+    """Pick the first input port that looks like a DJ controller."""
     names = names if names is not None else list_inputs()
     for n in names:
         low = n.lower()
         if any(h in low for h in _CONTROLLER_HINTS):
             return n
     return names[0] if names else None
+
+
+def _find_output() -> str | None:
+    if not available():
+        return None
+    import mido
+    try:
+        for n in mido.get_output_names():
+            if any(h in n.lower() for h in _CONTROLLER_HINTS):
+                return n
+    except Exception:
+        pass
+    return None
 
 
 def _decode(msg) -> dict:
@@ -121,16 +187,25 @@ class MidiRecorder:
 
     def _run(self, on_event) -> None:
         import mido
-        # NOTE: on Windows a MIDI input is usually EXCLUSIVE. If Rekordbox
-        # holds the DDJ port, opening it here can fail — the probe tells
-        # us whether the port is shareable on this machine.
         try:
             port = mido.open_input(self.port_name)
         except Exception as e:
-            log_warning(f"midi: cannot open {self.port_name!r}: {e} "
-                        "(Rekordbox may hold it — see probe notes)")
+            log_warning(f"midi: cannot open {self.port_name!r}: {e}")
             return
+        # Open the controller OUTPUT and send the wake-up SysEx — without
+        # it the FLX4 stays silent. Best-effort: capture still runs if
+        # the output can't be opened (another controller may not need it).
+        outp = None
+        out_name = _find_output()
+        if out_name:
+            try:
+                outp = mido.open_output(out_name)
+                outp.send(mido.Message("sysex", data=_FLX4_INIT_SYSEX))
+                log_info(f"midi: wake-up SysEx sent to {out_name!r}")
+            except Exception as e:
+                log_warning(f"midi: output/SysEx failed: {e}")
         self._t0 = time.perf_counter()
+        last_wake = self._t0
         log_info(f"midi: recording from {self.port_name!r}")
         try:
             with port:
@@ -144,9 +219,23 @@ class MidiRecorder:
                                 on_event(ev)
                             except Exception:
                                 pass
+                    now = time.perf_counter()
+                    if outp is not None and now - last_wake > _KEEPALIVE_S:
+                        try:
+                            outp.send(mido.Message("sysex",
+                                                   data=_FLX4_INIT_SYSEX))
+                        except Exception:
+                            pass
+                        last_wake = now
                     time.sleep(0.002)
         except Exception as e:
             log_warning(f"midi: capture loop ended: {e}")
+        finally:
+            if outp is not None:
+                try:
+                    outp.close()
+                except Exception:
+                    pass
 
     def stop(self) -> list[dict]:
         self._stop.set()
@@ -184,8 +273,9 @@ def probe(duration: float = 30.0) -> dict:
         key = (ev["kind"], ev["ch"], ev["num"])
         s = seen.get(key)
         if s is None:
-            seen[key] = {"count": 1, "min": ev["val"], "max": ev["val"]}
-            print(f"  NOUVEAU  {ev['kind']:8} ch{ev['ch']:<2} num{ev['num']:<3} "
+            seen[key] = {"count": 1, "min": ev["val"], "max": ev["val"],
+                         "label": label(ev)}
+            print(f"  {label(ev):16}  ch{ev['ch']:<2} num{ev['num']:<3} "
                   f"val{ev['val']}")
         else:
             s["count"] += 1
