@@ -125,7 +125,17 @@ class SetRecorder:
             return
         log_info(f"set_recorder: recording history {self._history_id}")
 
-        seen_pos: set[int] = set()
+        # Baseline: the tracks already in this session BEFORE we started
+        # (an earlier set). We only want what's played from now on, so
+        # seed seen_pos with them — they won't be logged.
+        try:
+            seen_pos: set[int] = {
+                int(s.TrackNo or 0)
+                for s in db.get_history_songs(HistoryID=self._history_id)}
+            log_info(f"set_recorder: baseline {len(seen_pos)} morceaux "
+                     "ignorés (déjà joués avant l'enregistrement)")
+        except Exception:
+            seen_pos = set()
         while not self._stop.is_set():
             try:
                 songs = sorted(
