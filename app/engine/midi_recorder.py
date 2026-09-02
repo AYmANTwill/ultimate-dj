@@ -57,27 +57,64 @@ _FLX4_MAP: dict[tuple, str] = {}
 
 
 def _fill_flx4_map() -> None:
+    """Complete DDJ-FLX4 map from Mixxx's Pioneer-DDJ-FLX4.midi.xml.
+    Channels: deck1 note=0x90/cc=0xB0 (ch0), deck2 0x91/0xB1 (ch1),
+    mixer cc 0xB6 (ch6) + browser notes 0x96 (ch6), FX 0x94/0x95
+    (ch4/ch5), deck1 pads 0x97 (ch7), deck2 pads 0x99 (ch9)."""
     cc, note = "cc", "note_on"
-    # per-deck: ch0 = deck 1, ch1 = deck 2
     for ch, d in ((0, 1), (1, 2)):
+        # analog (CC)
         _FLX4_MAP[(cc, ch, 0x00)] = f"tempo D{d}"
         _FLX4_MAP[(cc, ch, 0x04)] = f"trim D{d}"
         _FLX4_MAP[(cc, ch, 0x07)] = f"EQ hi D{d}"
         _FLX4_MAP[(cc, ch, 0x0B)] = f"EQ mid D{d}"
         _FLX4_MAP[(cc, ch, 0x0F)] = f"EQ low D{d}"
         _FLX4_MAP[(cc, ch, 0x13)] = f"volume D{d}"
-        _FLX4_MAP[(cc, ch, 0x22)] = f"jog D{d}"
-        _FLX4_MAP[(cc, ch, 0x23)] = f"jog D{d}"
         _FLX4_MAP[(cc, ch, 0x21)] = f"jog-ring D{d}"
+        _FLX4_MAP[(cc, ch, 0x22)] = f"jog D{d}"
+        _FLX4_MAP[(cc, ch, 0x23)] = f"jog-vinyl-off D{d}"
+        _FLX4_MAP[(cc, ch, 0x29)] = f"jog-search D{d}"
+        # transport / buttons (note)
         _FLX4_MAP[(note, ch, 0x0B)] = f"PLAY D{d}"
         _FLX4_MAP[(note, ch, 0x0C)] = f"CUE D{d}"
         _FLX4_MAP[(note, ch, 0x58)] = f"SYNC D{d}"
+        _FLX4_MAP[(note, ch, 0x3F)] = f"SHIFT D{d}"
         _FLX4_MAP[(note, ch, 0x36)] = f"jog-touch D{d}"
-    # mixer section (channel 6)
+        _FLX4_MAP[(note, ch, 0x54)] = f"casque D{d}"
+        _FLX4_MAP[(note, ch, 0x68)] = f"quantize D{d}"
+        # loops
+        _FLX4_MAP[(note, ch, 0x10)] = f"LOOP-IN D{d}"
+        _FLX4_MAP[(note, ch, 0x11)] = f"LOOP-OUT D{d}"
+        _FLX4_MAP[(note, ch, 0x4D)] = f"RELOOP D{d}"
+        _FLX4_MAP[(note, ch, 0x50)] = f"reloop-stop D{d}"
+        _FLX4_MAP[(note, ch, 0x4C)] = f"loop-in-adj D{d}"
+        _FLX4_MAP[(note, ch, 0x4E)] = f"loop-out-adj D{d}"
+        _FLX4_MAP[(note, ch, 0x51)] = f"cue-call< D{d}"
+        _FLX4_MAP[(note, ch, 0x53)] = f"cue-call> D{d}"
+    # performance pads (8 per mode): deck1 ch7, deck2 ch9
+    for ch, d in ((7, 1), (9, 2)):
+        for i in range(8):
+            _FLX4_MAP[(note, ch, 0x00 + i)] = f"pad hotcue{i + 1} D{d}"
+            _FLX4_MAP[(note, ch, 0x20 + i)] = f"pad beatjump{i + 1} D{d}"
+            _FLX4_MAP[(note, ch, 0x30 + i)] = f"pad sampler{i + 1} D{d}"
+            _FLX4_MAP[(note, ch, 0x40 + i)] = f"pad stem{i + 1} D{d}"
+            _FLX4_MAP[(note, ch, 0x60 + i)] = f"pad beatloop{i + 1} D{d}"
+    # mixer (channel 6)
     _FLX4_MAP[(cc, 6, 0x1F)] = "crossfader"
     _FLX4_MAP[(cc, 6, 0x0C)] = "casque mix"
     _FLX4_MAP[(cc, 6, 0x17)] = "filter D1"
     _FLX4_MAP[(cc, 6, 0x18)] = "filter D2"
+    _FLX4_MAP[(cc, 6, 0x40)] = "browse-rotate"
+    _FLX4_MAP[(note, 6, 0x41)] = "browse-press"
+    _FLX4_MAP[(note, 6, 0x46)] = "LOAD D1"
+    _FLX4_MAP[(note, 6, 0x47)] = "LOAD D2"
+    # beat FX (ch4 = deck1 side, ch5 = deck2 side)
+    _FLX4_MAP[(cc, 4, 0x02)] = "FX level/depth"
+    _FLX4_MAP[(note, 4, 0x47)] = "FX on D1"
+    _FLX4_MAP[(note, 5, 0x47)] = "FX on D2"
+    _FLX4_MAP[(note, 4, 0x63)] = "FX select"
+    _FLX4_MAP[(note, 4, 0x10)] = "FX assign D1"
+    _FLX4_MAP[(note, 5, 0x11)] = "FX assign D2"
 
 
 _fill_flx4_map()
